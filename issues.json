@@ -1,0 +1,1690 @@
+{
+  "meta": {
+    "project": "photo vault (working name)",
+    "generated": "2026-09-04",
+    "generator": "scripts/gen_issues.py",
+    "issue_count": 87,
+    "estimate_days_total": 231,
+    "estimate_scale": {
+      "S": 1,
+      "M": 3,
+      "L": 6,
+      "XL": 12
+    },
+    "milestones": {
+      "M0": "Foundations",
+      "M1": "Ingest",
+      "M2": "Fingerprint and group",
+      "M3": "Select and proxy",
+      "M4": "Review UI",
+      "M5": "Publish to Photos",
+      "M6": "Backup and verify",
+      "M7": "Automation",
+      "M8": "Migration",
+      "M9": "Open source"
+    },
+    "critical_path_hint": "M0-07 -> M1-03 -> M1-04 -> M2-04 -> M2-09 -> M3-08 -> M3-09 -> M5-01 -> M5-02 -> M6-04 -> M5-03 -> M8-05 -> M8-06 (iCloud fetch M1-05/M8-09 is off the critical path)",
+    "topological_order": [
+      "M0-01",
+      "M0-02",
+      "M0-04",
+      "M0-12",
+      "M0-13",
+      "M0-14",
+      "M0-15",
+      "M0-16",
+      "M0-17",
+      "M0-18",
+      "M0-19",
+      "M0-20",
+      "M0-03",
+      "M0-05",
+      "M0-06",
+      "M0-10",
+      "M0-11",
+      "M0-08",
+      "M0-07",
+      "M0-09",
+      "M6-01",
+      "M1-01",
+      "M2-01",
+      "M6-02",
+      "M1-02",
+      "M1-07",
+      "M2-02",
+      "M2-03",
+      "M3-04",
+      "M3-06",
+      "M6-03",
+      "M6-04",
+      "M6-05",
+      "M1-03",
+      "M1-06",
+      "M2-04",
+      "M3-05",
+      "M8-02",
+      "M1-00",
+      "M7-03",
+      "M7-05",
+      "M2-05",
+      "M2-06",
+      "M2-07",
+      "M3-07",
+      "M1-04",
+      "M7-06",
+      "M2-08",
+      "M1-05",
+      "M1-08",
+      "M5-04",
+      "M2-09",
+      "M8-01",
+      "M2-10",
+      "M3-01",
+      "M8-03",
+      "M3-02",
+      "M3-03",
+      "M3-08",
+      "M3-09",
+      "M4-01",
+      "M4-07",
+      "M5-01",
+      "M5-07",
+      "M5-08",
+      "M8-04",
+      "M4-02",
+      "M5-02",
+      "M5-05",
+      "M7-01",
+      "M9-04",
+      "M8-05",
+      "M4-03",
+      "M4-05",
+      "M5-03",
+      "M5-06",
+      "M7-02",
+      "M7-04",
+      "M9-01",
+      "M8-09",
+      "M4-04",
+      "M4-06",
+      "M8-06",
+      "M9-02",
+      "M8-07",
+      "M8-08",
+      "M9-03"
+    ]
+  },
+  "flow": [
+    "ingest: local sources first (USB library, folders, NAS, on-disk Photos originals) -> staging -> blake3 -> archive/objects (verified copy) -> journal; iCloud fetch is an optional trailing step",
+    "fingerprint: exif + phash/dhash + video frame hashes, versioned, cached per object",
+    "group: exact -> near (BK-tree) -> pair (RAW+JPEG, Live) -> sequence (burst/time window)",
+    "select: rule-based winner per near group, representative per sequence, overridden by journaled human decisions",
+    "proxy: review (720px) and publish (1920px HEIC / 1080p HEVC) with metadata copied",
+    "review: local web UI writes decisions to journal",
+    "publish: import proxies into Apple Photos, verify by UUID, retire originals after grace + backup-verified",
+    "backup: rsync/restic to >=2 targets, verify, scrub, restore drills",
+    "sync: one orchestrator command run by launchd (Mac) and a container schedule (NAS)"
+  ],
+  "issues": [
+    {
+      "id": "M0-01",
+      "title": "Blocking questions Q1-Q7 answered 2026-09-04 (Shared Library scope, edited-render handling, NAS volume1 assumption, Mar-2025 backup treated as full source, dedup definition, proxy targets, staging/compute host)",
+      "milestone": "M0",
+      "depends_on": [],
+      "labels": [
+        "decision",
+        "answered"
+      ],
+      "estimate": "S",
+      "description": "Q1 Shared Library: tooling supports both Personal and Shared Library assets, but every batch -- especially deletions -- is manually triggered and reviewed; no unattended runs against Photos, ever. Q2 Edited renders: proxy the edited version, not the un-edited original; edit history/Memories still don't survive osxphotos/Photos, accepted. Q3 NAS volume1 (9.7 TiB used, Immich empty): assumed to be prior photo backups, not yet verified -- process NAS-resident material before the live Photos library (see M1-00). Q4 March 2025 backup library: treated as a full-originals bulk source without further verification. Q5 Duplicate definition: auto-drop only exact + strictly-worse copies; bursts/near-dupes stay in the archive for manual review. Q6 Proxy targets: 1920px HEIC / 1080p HEVC, aiming for the 200GB iCloud tier. Q7 Staging/compute: the Intel i9 Mac (Radeon Pro 550M) does all compute with a 4TB local staging disk; the NAS is storage-only (source read + Immich archive write); the M3 Max is reserved for day-to-day work.",
+      "acceptance_criteria": [
+        "Closed on creation -- answers captured here for reference now that PLAN.md is retired"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-02",
+      "title": "Rotate leaked Immich API key and DB password; scrub old repos",
+      "milestone": "M0",
+      "depends_on": [],
+      "labels": [
+        "security"
+      ],
+      "estimate": "S",
+      "description": "API key and DB password are committed in the Immich, ImmichImportManager and NasPhotoOptimizationProject repos.",
+      "acceptance_criteria": [
+        "New key issued in Immich, old key revoked",
+        "No secret strings remain in any tracked file (gitleaks passes)"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-03",
+      "title": "Procure/attach staging storage on the Intel i9 Mac and second/third backup drives",
+      "milestone": "M0",
+      "depends_on": [
+        "M0-01"
+      ],
+      "labels": [
+        "hardware"
+      ],
+      "estimate": "S",
+      "description": "Compute and staging move to the Intel i9 Mac, not the M3 Max (busy with day-to-day work) or the NAS (too slow). Need 4 TB attached/local to the Intel Mac for staging/working set, plus at least two backup destinations (USB drive kept offline, and either a second NAS or cloud bucket).",
+      "acceptance_criteria": [
+        "4TB staging disk mounted on the Intel Mac and benchmarked (>500 MB/s)",
+        "Two backup targets identified and reachable"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-04",
+      "title": "Bootstrap repo: uv project, typer CLI skeleton, ruff, mypy, pytest, pre-commit",
+      "milestone": "M0",
+      "depends_on": [],
+      "labels": [
+        "infra"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [
+        "`uv run vault --help` lists all planned subcommands as stubs",
+        "CI runs lint, type check, tests on push"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-05",
+      "title": "Config schema and loader (single vault.toml + env overrides)",
+      "milestone": "M0",
+      "depends_on": [
+        "M0-04"
+      ],
+      "labels": [
+        "core"
+      ],
+      "estimate": "S",
+      "description": "Paths (archive, journal, catalog, proxies, staging), sources list, thresholds, proxy params, publish policy (grace days, shared-library policy), backup targets. No secrets in file; secrets via env or keychain.",
+      "acceptance_criteria": [
+        "Invalid config fails fast with a clear message",
+        "Example config committed as vault.example.toml"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-06",
+      "title": "Hashing module: BLAKE3 full hash, xxh3 prehash, chunked verify",
+      "milestone": "M0",
+      "depends_on": [
+        "M0-04"
+      ],
+      "labels": [
+        "core"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [
+        "Hash 1 GB file in <2 s on the Intel i9 Mac",
+        "Property test: hash(bytes) stable, verify() detects single-bit flip"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-07",
+      "title": "Content-addressed store: put (temp+rename), get path, exists, verify, iterate",
+      "milestone": "M0",
+      "depends_on": [
+        "M0-06",
+        "M0-05",
+        "M0-14"
+      ],
+      "labels": [
+        "core",
+        "data-safety"
+      ],
+      "estimate": "M",
+      "description": "Layout archive/objects/aa/bb/<hash>.<ext>. put() rehashes after copy and refuses to overwrite a differing object. Preserve mtime in sidecar metadata, not on the object.",
+      "acceptance_criteria": [
+        "put is idempotent and atomic (kill -9 mid-copy leaves no partial object)",
+        "verify(hash) rehashes and reports mismatch",
+        "Works on SMB and local APFS/ext4"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-08",
+      "title": "Append-only journal (jsonl, hash-chained, typed events)",
+      "milestone": "M0",
+      "depends_on": [
+        "M0-05"
+      ],
+      "labels": [
+        "core"
+      ],
+      "estimate": "M",
+      "description": "Event types: object_stored, source_seen, decision, publish, retire, backup_verified. Each line carries prev-line hash. Multiple writers (Mac + NAS) write to separate files merged by timestamp.",
+      "acceptance_criteria": [
+        "Corrupted or truncated line detected on read",
+        "Merge of two writer files is deterministic"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-09",
+      "title": "Catalog: SQLite schema, migrations, rebuild-from-journal",
+      "milestone": "M0",
+      "depends_on": [
+        "M0-08",
+        "M0-07"
+      ],
+      "labels": [
+        "core"
+      ],
+      "estimate": "L",
+      "description": "Tables: objects, sources, source_files, fingerprints(object,algo,version,value), groups, group_members, decisions, publishes, backups. WAL mode. `vault rebuild` recreates it from archive + journal.",
+      "acceptance_criteria": [
+        "rebuild on a fixture vault equals the incrementally built catalog (byte-for-byte dump)",
+        "Migrations are forward-only and tested"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-10",
+      "title": "Test fixture vault: ~200 synthetic and real assets covering every edge case",
+      "milestone": "M0",
+      "depends_on": [
+        "M0-04"
+      ],
+      "labels": [
+        "testing"
+      ],
+      "estimate": "M",
+      "description": "HEIC, JPEG, PNG, DNG+JPEG pair, Live Photo pair, burst of 12, resized/re-encoded copies, rotated copy, video MOV/MP4 with GPS, 0-byte file, non-media file, unicode filenames, same file twice.",
+      "acceptance_criteria": [
+        "Fixture generator is deterministic (seeded)",
+        "Documented expected groups and winners"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-11",
+      "title": "Docker image for NAS (linux/amd64) with exiftool, vips, ffmpeg",
+      "milestone": "M0",
+      "depends_on": [
+        "M0-04"
+      ],
+      "labels": [
+        "infra"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [
+        "`docker run vault status` works against a mounted archive on the ASUSTOR"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-12",
+      "title": "Decide: loose-folder triage (bips-go-yup 136GB, recovery/, Del, DelEA, DJI Bak) -- source vs junk",
+      "milestone": "M0",
+      "depends_on": [],
+      "labels": [
+        "decision"
+      ],
+      "estimate": "S",
+      "description": "PLAN.md Q8. Which of these loose folders are real sources to ingest and which are junk/recovery-dump noise to skip.",
+      "acceptance_criteria": [
+        "Written decision per folder, referenced by M8-02"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-13",
+      "title": "Decide: RAW+JPEG pair handling -- keep RAW as archive winner, proxy the embedded JPEG?",
+      "milestone": "M0",
+      "depends_on": [],
+      "labels": [
+        "decision"
+      ],
+      "estimate": "S",
+      "description": "PLAN.md Q9. Confirms the winner-rule tie-break (RAW > HEIC > JPEG) actually matches what should go back into Photos as the proxy.",
+      "acceptance_criteria": [
+        "Written decision, referenced by M3-01"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-14",
+      "title": "Decide: Immich managed-upload tree as the only archive, or also a flat originals tree outside Immich?",
+      "milestone": "M0",
+      "depends_on": [],
+      "labels": [
+        "decision"
+      ],
+      "estimate": "S",
+      "description": "PLAN.md Q10. Affects the content-addressed store's relationship to Immich's own `library/<user>/yyyy/MM/` layout.",
+      "acceptance_criteria": [
+        "Written decision, referenced by M0-07"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-15",
+      "title": "Decide: second copy of the archive -- second NAS, Backblaze B2, or rotating USB?",
+      "milestone": "M0",
+      "depends_on": [],
+      "labels": [
+        "decision"
+      ],
+      "estimate": "S",
+      "description": "PLAN.md Q11. RAID 1 on the NAS is not a backup; this must be settled before Phase 7/M8-06 deletes anything from Photos.",
+      "acceptance_criteria": [
+        "Written decision, referenced by M6-01"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-16",
+      "title": "Decide: future ingest path -- keep iPhone to iCloud to Photos loop, or move phone backup to the Immich app?",
+      "milestone": "M0",
+      "depends_on": [],
+      "labels": [
+        "decision"
+      ],
+      "estimate": "S",
+      "description": "PLAN.md Q12. Determines whether M7-05's family/steady-state upload path needs the full Photos-delta loop or can shift to Immich mobile backup.",
+      "acceptance_criteria": [
+        "Written decision, referenced by M7-05"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-17",
+      "title": "Decide: export hidden, Recently Deleted, and syndicated (Messages) assets, or skip them?",
+      "milestone": "M0",
+      "depends_on": [],
+      "labels": [
+        "decision"
+      ],
+      "estimate": "S",
+      "description": "PLAN.md Q13. Scopes what M1-04's Photos-library ingest actually pulls.",
+      "acceptance_criteria": [
+        "Written decision, referenced by M1-04"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-18",
+      "title": "Decide: timeline and downtime tolerance -- OK with Photos in a mixed proxy/original state for weeks?",
+      "milestone": "M0",
+      "depends_on": [],
+      "labels": [
+        "decision"
+      ],
+      "estimate": "S",
+      "description": "PLAN.md Q14. Affects how M8-06's year-by-year publish/retire schedule is paced.",
+      "acceptance_criteria": [
+        "Written decision, referenced by M8-06"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-19",
+      "title": "Decide: where should Immich ML (faces, CLIP embeddings) run -- NAS only, or a temporary Mac container for the initial backlog?",
+      "milestone": "M0",
+      "depends_on": [],
+      "labels": [
+        "decision"
+      ],
+      "estimate": "S",
+      "description": "PLAN.md Q15. Ops/config decision for the Immich deployment; doesn't gate any vault build issue.",
+      "acceptance_criteria": [
+        "Written decision, recorded in docs/decisions.md"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M0-20",
+      "title": "Decide: fuzzy-match risk tolerance -- auto-drop losers in clean clusters, or review every near-duplicate cluster by eye?",
+      "milestone": "M0",
+      "depends_on": [],
+      "labels": [
+        "decision"
+      ],
+      "estimate": "S",
+      "description": "PLAN.md Q16. At 200k+ assets, full manual review of every cluster is not realistic; sets the calibration target for M2-10.",
+      "acceptance_criteria": [
+        "Written decision, referenced by M2-10"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M1-00",
+      "title": "Ingest and dedupe NAS-resident material not in any Photos library, before the live Photos library export starts",
+      "milestone": "M1",
+      "depends_on": [
+        "M1-06",
+        "M0-01"
+      ],
+      "labels": [
+        "ingest",
+        "nas",
+        "data-safety"
+      ],
+      "estimate": "M",
+      "description": "Q3/Q7 (2026-09-04): NAS volume1 has 9.7 TiB used with Immich holding 0 assets, assumed to be prior photo/video backups (e.g. FastTransfer/PhotoBackupProject). Run ingest -> fingerprint -> group -> select -> publish-to-Immich for this NAS-resident content on its own, while the live Photos app stays running and untouched, before M1-04 begins. Confirms the volume1 assumption with real numbers before committing to the rest of the plan's storage estimates.",
+      "acceptance_criteria": [
+        "NAS volume1 content inventoried and classified as source vs. reclaimable space",
+        "Immich holds the deduped NAS-resident content before M1-04 (live Photos export) starts",
+        "No changes made to the live Photos app or library during this phase"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M1-01",
+      "title": "Source plugin interface: enumerate(), fetch(item)->local path, metadata(item)",
+      "milestone": "M1",
+      "depends_on": [
+        "M0-09"
+      ],
+      "labels": [
+        "ingest"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [
+        "Interface documented; folder source implements it"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M1-02",
+      "title": "Folder source (recursive, extension allowlist, sidecar discovery XMP/AAE/JSON)",
+      "milestone": "M1",
+      "depends_on": [
+        "M1-01"
+      ],
+      "labels": [
+        "ingest"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Sidecars linked to their media by stem",
+        "Ignores junk (.DS_Store, thumbs, AppleDouble ._ files)"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M1-03",
+      "title": "Ingest command: enumerate -> prehash -> full hash -> store -> journal, resumable",
+      "milestone": "M1",
+      "depends_on": [
+        "M1-02",
+        "M0-07",
+        "M0-08"
+      ],
+      "labels": [
+        "ingest"
+      ],
+      "estimate": "L",
+      "description": "Skip already-seen (source,path,size,mtime). Parallel hashing bounded by IO. Progress bar and summary. --dry-run.",
+      "acceptance_criteria": [
+        "Re-running ingest on unchanged source reports 0 new objects",
+        "Kill and resume loses no work",
+        "1 TB from USB ingests without manual intervention"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M1-04",
+      "title": "Apple Photos source via osxphotos (originals + edited + AAE + XMP + JSON metadata)",
+      "milestone": "M1",
+      "depends_on": [
+        "M1-01",
+        "M1-00",
+        "M0-17"
+      ],
+      "labels": [
+        "ingest",
+        "mac"
+      ],
+      "estimate": "L",
+      "description": "Wrap `osxphotos export --update --sidecar xmp --sidecar json --export-aae` into a staging dir. Exports only assets already present on disk by default; `--fetch-icloud` opt-in adds `--download-missing` in small date-range batches. Capture Photos UUID, albums, keywords, favorite, hidden, persons, shared-library flag, burst UUID, live photo pair.",
+      "acceptance_criteria": [
+        "Photos UUID -> object hash mapping stored in journal",
+        "Not-downloaded assets are listed in a report, never treated as errors",
+        "Optional iCloud fetch batches by date range and respects a free-disk floor"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M1-05",
+      "title": "Optional iCloud fetch mode: batch download of not-yet-local originals (low priority)",
+      "milestone": "M1",
+      "depends_on": [
+        "M1-04"
+      ],
+      "labels": [
+        "ingest",
+        "mac",
+        "optional"
+      ],
+      "estimate": "M",
+      "description": "Only needed for assets that exist nowhere locally after all other sources are ingested. Investigate whether downloaded originals stay in the library and fill the disk; choose batch size and eviction approach accordingly.",
+      "acceptance_criteria": [
+        "Runs unattended in small batches without exhausting the boot disk",
+        "Can be paused and resumed; no other stage depends on it"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M1-06",
+      "title": "Drop-folder source for the NAS (SMB share, quarantine until stable size, then ingest)",
+      "milestone": "M1",
+      "depends_on": [
+        "M1-02"
+      ],
+      "labels": [
+        "ingest",
+        "nas",
+        "data-safety"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "File still being written is not ingested",
+        "Ingested files moved to processed/ with date subfolders"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M1-07",
+      "title": "Immich source (optional): pull originals via API for assets not yet in the vault",
+      "milestone": "M1",
+      "depends_on": [
+        "M1-01"
+      ],
+      "labels": [
+        "ingest",
+        "immich",
+        "optional"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Immich asset id -> object hash recorded"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M1-08",
+      "title": "Pilot ingest: 5k assets from the loose folders + 1k from the live Photos library",
+      "milestone": "M1",
+      "depends_on": [
+        "M1-03",
+        "M1-04"
+      ],
+      "labels": [
+        "pilot"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [
+        "Counts reconciled against source",
+        "Report of any unreadable files"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M2-01",
+      "title": "EXIF/QuickTime extraction with exiftool batch mode",
+      "milestone": "M2",
+      "depends_on": [
+        "M0-09"
+      ],
+      "labels": [
+        "fingerprint"
+      ],
+      "estimate": "M",
+      "description": "Dates (with timezone), GPS, dims, orientation, camera, BurstUUID, MediaGroupUUID, ContentIdentifier, ImageUniqueID, MakerNote fields, codec, duration, ICC. Store raw JSON plus normalized columns.",
+      "acceptance_criteria": [
+        "10k files/min throughput",
+        "Unparseable file recorded, not fatal"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M2-02",
+      "title": "Image perceptual fingerprints (pHash, dHash, blockhash) via vips downscale + sharpness score",
+      "milestone": "M2",
+      "depends_on": [
+        "M2-01"
+      ],
+      "labels": [
+        "fingerprint"
+      ],
+      "estimate": "M",
+      "description": "Decode once at 1024 px, compute hashes, compute Laplacian variance for sharpness. Versioned algorithm id. HEIC and RAW via embedded preview.",
+      "acceptance_criteria": [
+        "Rotated copy is matched (compute hashes for 4 rotations or use rotation-invariant variant)",
+        "Resized copy within Hamming <=4 on 256-bit pHash"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M2-03",
+      "title": "Video fingerprints (frame pHashes at 10/50/90 percent, duration, resolution, bitrate)",
+      "milestone": "M2",
+      "depends_on": [
+        "M2-01"
+      ],
+      "labels": [
+        "fingerprint"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "1080p re-encode of same video matches original",
+        "Different videos do not match"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M2-04",
+      "title": "Fingerprint command: parallel, resumable, versioned, skips done work",
+      "milestone": "M2",
+      "depends_on": [
+        "M2-02",
+        "M2-03"
+      ],
+      "labels": [
+        "fingerprint"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Second run with no new objects does zero work"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M2-05",
+      "title": "Exact groups (same hash seen from multiple sources)",
+      "milestone": "M2",
+      "depends_on": [
+        "M2-04"
+      ],
+      "labels": [
+        "group"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [
+        "Group lists all source paths for the object"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M2-06",
+      "title": "Near groups via BK-tree over pHash with date/dims sanity checks",
+      "milestone": "M2",
+      "depends_on": [
+        "M2-04"
+      ],
+      "labels": [
+        "group"
+      ],
+      "estimate": "L",
+      "description": "Threshold configurable; default tight (<=2 bits on 64-bit dHash AND <=6 on 256-bit pHash). Reject if capture dates differ by more than a day when both known. Emit confidence score.",
+      "acceptance_criteria": [
+        "Fixture near-dupes grouped; fixture distinct images not grouped",
+        "230k images cluster in <30 min on the Intel i9 Mac"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M2-07",
+      "title": "Pair groups: RAW+JPEG, Live Photo still+video, edited+original from Photos",
+      "milestone": "M2",
+      "depends_on": [
+        "M2-04"
+      ],
+      "labels": [
+        "group"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Live pair via ContentIdentifier; RAW+JPEG via stem+date; edited via Photos UUID"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M2-08",
+      "title": "Sequence groups: BurstUUID, plus time window (<=3 s) with high similarity",
+      "milestone": "M2",
+      "depends_on": [
+        "M2-06",
+        "M2-07"
+      ],
+      "labels": [
+        "group"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Fixture burst of 12 becomes one sequence",
+        "Two different scenes 2 s apart are not merged"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M2-09",
+      "title": "Group command produces deterministic group ids (hash of sorted member hashes)",
+      "milestone": "M2",
+      "depends_on": [
+        "M2-05",
+        "M2-06",
+        "M2-07",
+        "M2-08"
+      ],
+      "labels": [
+        "group"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [
+        "Re-running group yields identical ids"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M2-10",
+      "title": "Similarity threshold calibration on a labelled sample of 500 clusters",
+      "milestone": "M2",
+      "depends_on": [
+        "M2-09",
+        "M1-08",
+        "M0-20"
+      ],
+      "labels": [
+        "group",
+        "research"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Precision >=0.99 on near groups at chosen threshold",
+        "Thresholds written into config defaults with rationale"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M3-01",
+      "title": "Winner rule for near groups (pixels > RAW>HEIC>JPEG > size > metadata > earliest)",
+      "milestone": "M3",
+      "depends_on": [
+        "M2-09",
+        "M0-13"
+      ],
+      "labels": [
+        "select"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [
+        "Pure function with table-driven tests",
+        "Edited render never beats its original unless original missing"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M3-02",
+      "title": "Representative rule for sequences (winner of sharpest frame; faces-open heuristic optional)",
+      "milestone": "M3",
+      "depends_on": [
+        "M3-01"
+      ],
+      "labels": [
+        "select"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Deterministic; ties broken by earliest capture time"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M3-03",
+      "title": "Decision model: human decisions override rules; effective_state view",
+      "milestone": "M3",
+      "depends_on": [
+        "M3-01",
+        "M0-08"
+      ],
+      "labels": [
+        "select"
+      ],
+      "estimate": "M",
+      "description": "Decisions: keep, trim, set_representative, merge_groups, split_group, undo. Stored in journal; catalog view computes effective published set.",
+      "acceptance_criteria": [
+        "Undo restores prior effective state",
+        "Rebuild reproduces effective state"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M3-04",
+      "title": "Image proxy generator (vips): configurable long edge and HEIC/JPEG quality; two profiles: review (720px) and publish (1920px)",
+      "milestone": "M3",
+      "depends_on": [
+        "M2-01"
+      ],
+      "labels": [
+        "proxy"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Derived cache keyed by (hash, profile version)",
+        "10k images/hour on the Intel i9 Mac",
+        "Orientation and ICC preserved"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M3-05",
+      "title": "Metadata copy into proxies (exiftool -tagsFromFile, all EXIF/GPS/XMP, ContentIdentifier)",
+      "milestone": "M3",
+      "depends_on": [
+        "M3-04"
+      ],
+      "labels": [
+        "proxy"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [
+        "Proxy imported into a scratch Photos library shows correct date, GPS, keywords"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M3-06",
+      "title": "Video proxy generator (ffmpeg): 1080p HEVC, VideoToolbox on Mac, libx265 fallback; .mov; metadata preserved",
+      "milestone": "M3",
+      "depends_on": [
+        "M2-01"
+      ],
+      "labels": [
+        "proxy"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Creation date and GPS visible in Photos after import",
+        "Throughput measured and documented"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M3-07",
+      "title": "Live Photo proxy pairing (still + video share ContentIdentifier after proxying)",
+      "milestone": "M3",
+      "depends_on": [
+        "M3-05",
+        "M3-06"
+      ],
+      "labels": [
+        "proxy"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [
+        "Imported pair shows as Live Photo in Photos"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M3-08",
+      "title": "Proxy command: parallel, resumable, only for objects that need it (winners/reps)",
+      "milestone": "M3",
+      "depends_on": [
+        "M3-04",
+        "M3-06",
+        "M3-03"
+      ],
+      "labels": [
+        "proxy"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [
+        "No-op on second run"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M3-09",
+      "title": "Publish-set calculation and size report (estimate iCloud footprint)",
+      "milestone": "M3",
+      "depends_on": [
+        "M3-03",
+        "M3-08"
+      ],
+      "labels": [
+        "select"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [
+        "Reports total proxy bytes vs original bytes per year"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M4-01",
+      "title": "Review server (FastAPI + htmx) reading catalog and proxies, local only",
+      "milestone": "M4",
+      "depends_on": [
+        "M3-09"
+      ],
+      "labels": [
+        "ui"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Starts with `vault review`, opens browser, no external network"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M4-02",
+      "title": "Timeline view: infinite scroll by day using review proxies, fast on 230k items",
+      "milestone": "M4",
+      "depends_on": [
+        "M4-01"
+      ],
+      "labels": [
+        "ui"
+      ],
+      "estimate": "L",
+      "description": "",
+      "acceptance_criteria": [
+        "Scroll stays under 100 ms/frame with virtualization"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M4-03",
+      "title": "Sequence strip view: burst/near members side by side, sharpness badges, choose representative",
+      "milestone": "M4",
+      "depends_on": [
+        "M4-02"
+      ],
+      "labels": [
+        "ui"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "One click sets representative and writes decision"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M4-04",
+      "title": "Keep/trim actions with keyboard shortcuts, batch select, undo",
+      "milestone": "M4",
+      "depends_on": [
+        "M4-03",
+        "M3-03"
+      ],
+      "labels": [
+        "ui"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Every action is a journal line; undo works across restarts"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M4-05",
+      "title": "Filters: year, source, group type, undecided-only, sequences with >N members",
+      "milestone": "M4",
+      "depends_on": [
+        "M4-02"
+      ],
+      "labels": [
+        "ui"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [],
+      "notes": ""
+    },
+    {
+      "id": "M4-06",
+      "title": "Compare view for near-group winners (side-by-side with zoom, dims, size, source)",
+      "milestone": "M4",
+      "depends_on": [
+        "M4-03"
+      ],
+      "labels": [
+        "ui"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [],
+      "notes": ""
+    },
+    {
+      "id": "M4-07",
+      "title": "Contact-sheet HTML export as a no-server fallback for review",
+      "milestone": "M4",
+      "depends_on": [
+        "M3-09"
+      ],
+      "labels": [
+        "ui",
+        "optional"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [],
+      "notes": ""
+    },
+    {
+      "id": "M5-01",
+      "title": "Publish target interface and Photos target via osxphotos import (album, keywords, title, description, location, favorite)",
+      "milestone": "M5",
+      "depends_on": [
+        "M3-09"
+      ],
+      "labels": [
+        "publish",
+        "mac"
+      ],
+      "estimate": "L",
+      "description": "",
+      "acceptance_criteria": [
+        "Imported asset UUID captured and journaled",
+        "--skip-dups prevents double import"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M5-02",
+      "title": "Verify step: confirm proxy present in Photos by UUID and metadata matches",
+      "milestone": "M5",
+      "depends_on": [
+        "M5-01"
+      ],
+      "labels": [
+        "publish",
+        "mac"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Mismatch blocks retire for that asset"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M5-03",
+      "title": "Retire step: delete original from Photos by UUID, manually triggered per batch, backup-verified precondition, --yes",
+      "milestone": "M5",
+      "depends_on": [
+        "M5-02",
+        "M6-04"
+      ],
+      "labels": [
+        "publish",
+        "mac",
+        "destructive",
+        "data-safety"
+      ],
+      "estimate": "M",
+      "description": "Q1 (2026-09-04): no automated or scheduled deletion, ever. Every retire batch is triggered by an explicit human command and reviewed before running -- it is never invoked by `vault sync`, launchd, or any unattended job. Enforce this at runtime, not just by documentation.",
+      "acceptance_criteria": [
+        "Refuses if object not in >=1 verified backup",
+        "Refuses for Shared Library assets unless policy allows",
+        "Dry run lists exact UUIDs and a second explicit confirmation flag is required to actually delete",
+        "Cannot be invoked from `vault sync` or any scheduled/launchd job -- enforced by a runtime check"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M5-04",
+      "title": "Shared Library policy and contributor detection (track osxphotos issue 860)",
+      "milestone": "M5",
+      "depends_on": [
+        "M0-01",
+        "M1-04"
+      ],
+      "labels": [
+        "publish",
+        "risk"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Policy documented; assets of other contributors never retired without explicit config"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M5-05",
+      "title": "Album and favorites round-trip mapping (Photos albums -> proxies in same albums)",
+      "milestone": "M5",
+      "depends_on": [
+        "M5-01"
+      ],
+      "labels": [
+        "publish"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Albums recreated with same names; favorites set"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M5-06",
+      "title": "Pilot: 500 assets round trip into a scratch Photos library, then 500 into the real one",
+      "milestone": "M5",
+      "depends_on": [
+        "M5-02",
+        "M5-05",
+        "M3-07"
+      ],
+      "labels": [
+        "pilot",
+        "mac"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Checklist: dates, GPS, albums, keywords, Live Photos, HEIC rendering, faces re-detected",
+        "Sign-off recorded in docs/decisions.md"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M5-07",
+      "title": "Immich publish target via immich-go (winners, albums, XMP) for viewing",
+      "milestone": "M5",
+      "depends_on": [
+        "M3-09"
+      ],
+      "labels": [
+        "publish",
+        "immich",
+        "optional"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Winners' checksums found via Immich API after upload"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M5-08",
+      "title": "Folder publish target (plain export of winners by yyyy/MM) for non-Immich users",
+      "milestone": "M5",
+      "depends_on": [
+        "M3-09"
+      ],
+      "labels": [
+        "publish",
+        "optional"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [],
+      "notes": ""
+    },
+    {
+      "id": "M6-01",
+      "title": "Backup target interface: rsync-to-disk and restic (B2/second NAS)",
+      "milestone": "M6",
+      "depends_on": [
+        "M0-07",
+        "M0-08",
+        "M0-15"
+      ],
+      "labels": [
+        "backup",
+        "data-safety"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Targets configurable; archive and journal both included"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M6-02",
+      "title": "Backup command: incremental, then verify by rehashing a sample and all new objects",
+      "milestone": "M6",
+      "depends_on": [
+        "M6-01"
+      ],
+      "labels": [
+        "backup",
+        "data-safety"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Journal event backup_verified per object per target"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M6-03",
+      "title": "Scrub command: periodic full rehash of archive and backups, report drift",
+      "milestone": "M6",
+      "depends_on": [
+        "M6-02"
+      ],
+      "labels": [
+        "backup",
+        "data-safety"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [
+        "Monthly scrub of 8 TB completes; report emailed/logged"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M6-04",
+      "title": "Restore drill: restore 1k random objects from each target and verify",
+      "milestone": "M6",
+      "depends_on": [
+        "M6-02"
+      ],
+      "labels": [
+        "backup",
+        "data-safety"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [
+        "Documented runbook; drill passes"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M6-05",
+      "title": "Offline drive rotation procedure (two USB drives alternating, one off-site)",
+      "milestone": "M6",
+      "depends_on": [
+        "M6-02",
+        "M0-03"
+      ],
+      "labels": [
+        "backup",
+        "ops",
+        "data-safety"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [
+        "Runbook in docs/backups.md"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M7-01",
+      "title": "`vault sync` orchestrator: ingest -> fingerprint -> group -> select -> proxy -> publish(import) -> backup, with lock file",
+      "milestone": "M7",
+      "depends_on": [
+        "M1-04",
+        "M2-09",
+        "M3-08",
+        "M5-01",
+        "M6-02"
+      ],
+      "labels": [
+        "automation"
+      ],
+      "estimate": "M",
+      "description": "Never invokes retire (M5-03). Retire is a separate, always-manual command -- vault sync's job ends at importing proxies into Photos.",
+      "acceptance_criteria": [
+        "Single command idempotent; concurrent run refused",
+        "Retire (M5-03) is unreachable from this command, enforced by a runtime check not just omission"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M7-02",
+      "title": "Intel Mac launchd job for nightly sync (ingest through publish/import only, never retire) with disk-space and power preconditions",
+      "milestone": "M7",
+      "depends_on": [
+        "M7-01"
+      ],
+      "labels": [
+        "automation",
+        "mac"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [],
+      "notes": ""
+    },
+    {
+      "id": "M7-03",
+      "title": "NAS container schedule: hourly drop-folder ingest, nightly backup, monthly scrub",
+      "milestone": "M7",
+      "depends_on": [
+        "M0-11",
+        "M1-06",
+        "M6-03"
+      ],
+      "labels": [
+        "automation",
+        "nas"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [],
+      "notes": ""
+    },
+    {
+      "id": "M7-04",
+      "title": "Status, health and notifications (CLI status, JSON report, ntfy/email on failure)",
+      "milestone": "M7",
+      "depends_on": [
+        "M7-01"
+      ],
+      "labels": [
+        "automation"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [],
+      "notes": ""
+    },
+    {
+      "id": "M7-05",
+      "title": "Family upload path: drop folder via SMB/PhotoSync, or Immich mobile -> Immich source",
+      "milestone": "M7",
+      "depends_on": [
+        "M1-06",
+        "M1-07",
+        "M0-16"
+      ],
+      "labels": [
+        "automation",
+        "family"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [
+        "Documented instructions for family members"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M7-06",
+      "title": "Catalog concurrency: Mac and NAS both writing (journal per writer, catalog rebuild on conflict)",
+      "milestone": "M7",
+      "depends_on": [
+        "M0-09",
+        "M7-03"
+      ],
+      "labels": [
+        "automation",
+        "core"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Simulated concurrent writes converge after rebuild"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M8-01",
+      "title": "Ingest the March-2025 backup Photos library (bulk originals from USB)",
+      "milestone": "M8",
+      "depends_on": [
+        "M1-04",
+        "M1-08",
+        "M0-03"
+      ],
+      "labels": [
+        "migration"
+      ],
+      "estimate": "L",
+      "description": "",
+      "acceptance_criteria": [
+        "All assets ingested or listed as unreadable"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M8-02",
+      "title": "Ingest loose folders (PhotosBackup, MP600, BergePhotos, NAS FastTransfer)",
+      "milestone": "M8",
+      "depends_on": [
+        "M1-03",
+        "M0-01",
+        "M0-12"
+      ],
+      "labels": [
+        "migration"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [],
+      "notes": ""
+    },
+    {
+      "id": "M8-03",
+      "title": "Ingest the live Photos library: locally present originals only",
+      "milestone": "M8",
+      "depends_on": [
+        "M8-01"
+      ],
+      "labels": [
+        "migration",
+        "mac"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [
+        "Everything downloaded on the Mac is archived; not-downloaded assets listed in a report"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M8-09",
+      "title": "Optional last step: fetch remaining iCloud-only originals in background batches",
+      "milestone": "M8",
+      "depends_on": [
+        "M8-05",
+        "M1-05"
+      ],
+      "labels": [
+        "migration",
+        "mac",
+        "optional"
+      ],
+      "estimate": "XL",
+      "description": "Runs after the archive is backed up. Low priority; can span weeks. Retire in Photos only happens for assets whose original is archived, so this step only widens coverage.",
+      "acceptance_criteria": [
+        "Report of assets that still exist only in iCloud trends to zero or is accepted as-is"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M8-04",
+      "title": "Full fingerprint + group + select on the whole vault; publish size report",
+      "milestone": "M8",
+      "depends_on": [
+        "M8-02",
+        "M8-03",
+        "M2-10",
+        "M3-09"
+      ],
+      "labels": [
+        "migration"
+      ],
+      "estimate": "L",
+      "description": "",
+      "acceptance_criteria": [],
+      "notes": ""
+    },
+    {
+      "id": "M8-05",
+      "title": "First full backup to two targets and verify before any retire",
+      "milestone": "M8",
+      "depends_on": [
+        "M8-04",
+        "M6-04",
+        "M6-05"
+      ],
+      "labels": [
+        "migration",
+        "backup",
+        "data-safety"
+      ],
+      "estimate": "L",
+      "description": "",
+      "acceptance_criteria": [],
+      "notes": ""
+    },
+    {
+      "id": "M8-06",
+      "title": "Publish proxies to Photos year by year, verify, retire originals, monitor iCloud usage",
+      "milestone": "M8",
+      "depends_on": [
+        "M8-05",
+        "M5-06",
+        "M5-04",
+        "M0-18"
+      ],
+      "labels": [
+        "migration",
+        "destructive",
+        "data-safety"
+      ],
+      "estimate": "XL",
+      "description": "",
+      "acceptance_criteria": [
+        "iCloud usage drops as expected per year",
+        "Zero assets in Photos without a matching archive object",
+        "Each year's retire batch is manually triggered and reviewed -- never automated (M5-03)"
+      ],
+      "notes": ""
+    },
+    {
+      "id": "M8-07",
+      "title": "Sequence trimming passes in the review UI (bursts first, then near groups)",
+      "milestone": "M8",
+      "depends_on": [
+        "M8-04",
+        "M4-04"
+      ],
+      "labels": [
+        "migration",
+        "ui"
+      ],
+      "estimate": "L",
+      "description": "",
+      "acceptance_criteria": [],
+      "notes": ""
+    },
+    {
+      "id": "M8-08",
+      "title": "Decommission old projects and staging; keep one archived copy of decisions",
+      "milestone": "M8",
+      "depends_on": [
+        "M8-06"
+      ],
+      "labels": [
+        "migration",
+        "cleanup"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [],
+      "notes": ""
+    },
+    {
+      "id": "M9-01",
+      "title": "Docs: README, quickstart, architecture, safety model, config reference",
+      "milestone": "M9",
+      "depends_on": [
+        "M7-01"
+      ],
+      "labels": [
+        "docs"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [],
+      "notes": ""
+    },
+    {
+      "id": "M9-02",
+      "title": "Remove all personal paths/defaults; example configs for Mac-only, NAS-only, both",
+      "milestone": "M9",
+      "depends_on": [
+        "M9-01"
+      ],
+      "labels": [
+        "docs"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [],
+      "notes": ""
+    },
+    {
+      "id": "M9-03",
+      "title": "License, contributing guide, issue templates, release workflow (uv build, Docker publish)",
+      "milestone": "M9",
+      "depends_on": [
+        "M9-02"
+      ],
+      "labels": [
+        "docs",
+        "infra"
+      ],
+      "estimate": "S",
+      "description": "",
+      "acceptance_criteria": [],
+      "notes": ""
+    },
+    {
+      "id": "M9-04",
+      "title": "Immich integration documented as optional plugin; Google Takeout source",
+      "milestone": "M9",
+      "depends_on": [
+        "M5-07",
+        "M1-07"
+      ],
+      "labels": [
+        "docs",
+        "optional"
+      ],
+      "estimate": "M",
+      "description": "",
+      "acceptance_criteria": [],
+      "notes": ""
+    }
+  ]
+}
