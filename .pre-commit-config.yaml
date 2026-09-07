@@ -33,6 +33,7 @@ repos:
     rev: v8.30.1
     hooks:
       - id: gitleaks
+        stages: [pre-commit]
 
   # mypy (type checking) - pre-push stage
   - repo: local

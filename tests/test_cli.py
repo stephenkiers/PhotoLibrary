@@ -9,11 +9,15 @@ runner = CliRunner()
 
 
 def test_command_surface() -> None:
-    """Test that registered command names match the spec table."""
+    """Test that registered command names match the spec table.
+
+    This is the deliberate AC #1 verification mechanism: parsing Rich's box-drawing
+    output to confirm command registration.
+    """
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
 
-    expected_commands = {name for name, _, _, _ in COMMANDS}
+    expected_commands = {spec.name for spec in COMMANDS}
 
     # Extract command names from help output by looking for them between panel lines
     help_output = result.output
@@ -23,10 +27,12 @@ def test_command_surface() -> None:
     for line in help_output.split("\n"):
         line_stripped = line.strip()
         # Look for lines that start with a command name followed by spaces
-        for name, _, _, _ in COMMANDS:
+        for spec in COMMANDS:
             # Match command name followed by spaces and then description (with box chars)
-            if line_stripped.startswith(name + " ") or line_stripped.startswith("│ " + name + " "):
-                registered_commands.add(name)
+            if line_stripped.startswith(spec.name + " ") or line_stripped.startswith(
+                "│ " + spec.name + " "
+            ):
+                registered_commands.add(spec.name)
 
     assert registered_commands == expected_commands
 
@@ -37,8 +43,8 @@ def test_help_exits_zero() -> None:
     assert result.exit_code == 0
 
     help_output = result.output
-    for name, _, _, _ in COMMANDS:
-        assert name in help_output
+    for spec in COMMANDS:
+        assert spec.name in help_output
 
 
 def test_stub_exits_nonzero() -> None:
@@ -51,39 +57,34 @@ def test_stub_exits_nonzero() -> None:
     assert "https://github.com/stephenkiers/PhotoLibrary/issues/36" in output
 
 
-def test_retire_requires_yes() -> None:
-    """Test that retire without --yes fails."""
-    result = runner.invoke(app, ["retire"])
-    assert result.exit_code != 0
-    assert result.exit_code != ExitCode.NOT_IMPLEMENTED
-
-
 def test_bare_vault_shows_help() -> None:
     """Test that bare `vault` with no args shows help."""
     result = runner.invoke(app, [])
-    # Should display help, even if exit code is non-zero
-    assert "Usage" in result.output or "Commands" in result.output
+    # Should display help with command names visible
+    assert "ingest" in result.output, "Should show at least one command name in help"
 
 
 def test_all_commands_exit_with_issue_number() -> None:
     """Test that all 17 commands exit with code 3 and reference their issue numbers.
 
-    Note: retire is special and requires --yes before it can proceed to the stub exit.
+    Note: retire requires --yes before it can proceed to the stub exit.
     """
-    for name, _panel, issue_num, _ in COMMANDS:
-        if name == "retire":
-            # retire requires --yes flag, test separately
-            result = runner.invoke(app, ["--yes", name])
+    for spec in COMMANDS:
+        if spec.requires_confirmation:
+            # Commands requiring confirmation need --yes flag
+            result = runner.invoke(app, ["--yes", spec.name])
         else:
-            result = runner.invoke(app, [name])
+            result = runner.invoke(app, [spec.name])
 
         assert result.exit_code == ExitCode.NOT_IMPLEMENTED, (
-            f"'{name}' exit code: expected {ExitCode.NOT_IMPLEMENTED}, got {result.exit_code}"
+            f"'{spec.name}' exit code: expected {ExitCode.NOT_IMPLEMENTED}, got {result.exit_code}"
         )
-        assert str(issue_num) in result.output, (
-            f"'{name}' output missing issue number {issue_num}: {result.output}"
+        assert str(spec.issue) in result.output, (
+            f"'{spec.name}' output missing issue number {spec.issue}: {result.output}"
         )
-        assert "github.com" in result.output, f"'{name}' output missing GitHub URL: {result.output}"
+        assert "github.com" in result.output, (
+            f"'{spec.name}' output missing GitHub URL: {result.output}"
+        )
 
 
 def test_panel_groupings_in_help() -> None:
@@ -94,8 +95,8 @@ def test_panel_groupings_in_help() -> None:
 
     # Extract panel names from COMMANDS spec
     panels = set()
-    for _, panel, _, _ in COMMANDS:
-        panels.add(panel)
+    for spec in COMMANDS:
+        panels.add(spec.panel)
 
     # Verify each panel appears in help
     for panel in panels:
@@ -104,37 +105,39 @@ def test_panel_groupings_in_help() -> None:
         )
 
 
-def test_pipeline_commands_in_correct_panel() -> None:
-    """Test that Pipeline commands are listed in help."""
-    result = runner.invoke(app, ["--help"])
-    assert result.exit_code == 0
-    help_output = result.output
+def _registered_panel(name: str) -> str | None:
+    """Look up the rich_help_panel Typer actually registered a command under."""
+    for command_info in app.registered_commands:
+        if command_info.name == name:
+            return command_info.rich_help_panel
+    return None
 
-    pipeline_commands = [name for name, panel, _, _ in COMMANDS if panel == "Pipeline"]
+
+def test_pipeline_commands_in_correct_panel() -> None:
+    """Test that Pipeline commands are registered under the Pipeline panel."""
+    pipeline_commands = [spec.name for spec in COMMANDS if spec.panel == "Pipeline"]
     for cmd in pipeline_commands:
-        assert cmd in help_output, f"Pipeline command '{cmd}' should be in help"
+        assert _registered_panel(cmd) == "Pipeline", (
+            f"'{cmd}' should be registered under the Pipeline panel"
+        )
 
 
 def test_safety_commands_in_correct_panel() -> None:
-    """Test that Safety commands are listed in help."""
-    result = runner.invoke(app, ["--help"])
-    assert result.exit_code == 0
-    help_output = result.output
-
-    safety_commands = [name for name, panel, _, _ in COMMANDS if panel == "Safety"]
+    """Test that Safety commands are registered under the Safety panel."""
+    safety_commands = [spec.name for spec in COMMANDS if spec.panel == "Safety"]
     for cmd in safety_commands:
-        assert cmd in help_output, f"Safety command '{cmd}' should be in help"
+        assert _registered_panel(cmd) == "Safety", (
+            f"'{cmd}' should be registered under the Safety panel"
+        )
 
 
 def test_operations_commands_in_correct_panel() -> None:
-    """Test that Operations commands are listed in help."""
-    result = runner.invoke(app, ["--help"])
-    assert result.exit_code == 0
-    help_output = result.output
-
-    ops_commands = [name for name, panel, _, _ in COMMANDS if panel == "Operations"]
+    """Test that Operations commands are registered under the Operations panel."""
+    ops_commands = [spec.name for spec in COMMANDS if spec.panel == "Operations"]
     for cmd in ops_commands:
-        assert cmd in help_output, f"Operations command '{cmd}' should be in help"
+        assert _registered_panel(cmd) == "Operations", (
+            f"'{cmd}' should be registered under the Operations panel"
+        )
 
 
 def test_retire_with_yes_flag_bypasses_guard() -> None:
@@ -146,10 +149,9 @@ def test_retire_with_yes_flag_bypasses_guard() -> None:
 
 
 def test_retire_without_yes_flag_fails() -> None:
-    """Test that retire without --yes exits with error before stub."""
+    """Test that retire without --yes exits with CONFIRMATION_REQUIRED error."""
     result = runner.invoke(app, ["retire"])
-    assert result.exit_code != ExitCode.NOT_IMPLEMENTED
-    assert result.exit_code != 0
+    assert result.exit_code == ExitCode.CONFIRMATION_REQUIRED
 
 
 def test_config_global_flag() -> None:
@@ -206,90 +208,6 @@ def test_multiple_global_flags() -> None:
     result = runner.invoke(app, ["--dry-run", "-vv", "--config", "/path", "--yes", "ingest"])
     # Should get past all flag parsing and hit the stub exit
     assert result.exit_code == ExitCode.NOT_IMPLEMENTED
-
-
-def test_ingest_specific_exit_code() -> None:
-    """Test that ingest command specifically exits with code 3 for issue 36."""
-    result = runner.invoke(app, ["ingest"])
-    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
-    assert "36" in result.output
-
-
-def test_fingerprint_specific_exit_code() -> None:
-    """Test that fingerprint command exits with code 3 for issue 45."""
-    result = runner.invoke(app, ["fingerprint"])
-    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
-    assert "45" in result.output
-
-
-def test_group_specific_exit_code() -> None:
-    """Test that group command exits with code 3 for issue 50."""
-    result = runner.invoke(app, ["group"])
-    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
-    assert "50" in result.output
-
-
-def test_select_specific_exit_code() -> None:
-    """Test that select command exits with code 3 for issue 52."""
-    result = runner.invoke(app, ["select"])
-    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
-    assert "52" in result.output
-
-
-def test_proxy_specific_exit_code() -> None:
-    """Test that proxy command exits with code 3 for issue 59."""
-    result = runner.invoke(app, ["proxy"])
-    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
-    assert "59" in result.output
-
-
-def test_review_specific_exit_code() -> None:
-    """Test that review command exits with code 3 for issue 61."""
-    result = runner.invoke(app, ["review"])
-    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
-    assert "61" in result.output
-
-
-def test_publish_specific_exit_code() -> None:
-    """Test that publish command exits with code 3 for issue 68."""
-    result = runner.invoke(app, ["publish"])
-    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
-    assert "68" in result.output
-
-
-def test_backup_specific_exit_code() -> None:
-    """Test that backup command exits with code 3 for issue 77."""
-    result = runner.invoke(app, ["backup"])
-    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
-    assert "77" in result.output
-
-
-def test_sync_specific_exit_code() -> None:
-    """Test that sync command exits with code 3 for issue 81."""
-    result = runner.invoke(app, ["sync"])
-    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
-    assert "81" in result.output
-
-
-def test_verify_specific_exit_code() -> None:
-    """Test that verify command exits with code 3 for issue 69."""
-    result = runner.invoke(app, ["verify"])
-    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
-    assert "69" in result.output
-
-
-def test_scrub_specific_exit_code() -> None:
-    """Test that scrub command exits with code 3 for issue 78."""
-    result = runner.invoke(app, ["scrub"])
-    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
-    assert "78" in result.output
-
-
-def test_restore_specific_exit_code() -> None:
-    """Test that restore command exits with code 3 for issue 79."""
-    result = runner.invoke(app, ["restore"])
-    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
-    assert "79" in result.output
 
 
 def test_status_specific_exit_code() -> None:

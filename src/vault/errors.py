@@ -8,6 +8,7 @@ class ExitCode(IntEnum):
 
     OK = 0
     NOT_IMPLEMENTED = 3
+    CONFIRMATION_REQUIRED = 1
 
 
 class VaultError(Exception):

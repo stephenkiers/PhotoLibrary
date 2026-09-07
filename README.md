@@ -58,4 +58,4 @@ For more details, see `.pre-commit-config.yaml`.
 
 ## License
 
-Not yet decided (see `docs/decisions.md`).
+Not yet decided (see issue #98, milestone M9-03).

@@ -1,4 +1,4 @@
-# Runtime config (vault.toml is the real file; vault.example.toml is committed instead)
+# Runtime config (vault.toml is the real file; vault.example.toml is planned)
 vault.toml
 .env
 
