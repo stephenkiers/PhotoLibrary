@@ -9,7 +9,11 @@ Usage:
 
 Never starts any project work itself -- it only creates tracking issues on GitHub.
 """
-import json, subprocess, sys, os
+
+import json
+import os
+import subprocess
+import sys
 
 MAP_PATH = os.path.join(os.path.dirname(__file__), "..", ".github-issue-map.json")
 LABEL_COLOR = "6f42c1"  # any custom label not already on the repo gets this color
@@ -42,7 +46,19 @@ def node_id(repo, number):
       repository(owner:$o,name:$r){ issue(number:$n){ id } }
     }"""
     owner, name = repo.split("/")
-    out = run_json("gh", "api", "graphql", "-f", f"query={q}", "-f", f"o={owner}", "-f", f"r={name}", "-F", f"n={number}")
+    out = run_json(
+        "gh",
+        "api",
+        "graphql",
+        "-f",
+        f"query={q}",
+        "-f",
+        f"o={owner}",
+        "-f",
+        f"r={name}",
+        "-F",
+        f"n={number}",
+    )
     return out["data"]["repository"]["issue"]["id"]
 
 
@@ -57,11 +73,33 @@ def add_blocked_by(dry_run, blocked_id, blocking_id):
     if dry_run:
         return
     m = "mutation($i:ID!,$b:ID!){ addBlockedBy(input:{issueId:$i,blockingIssueId:$b}){ issue{ id } } }"
-    run("gh", "api", "graphql", "-f", f"query={m}", "-f", f"i={blocked_id}", "-f", f"b={blocking_id}")
+    run(
+        "gh",
+        "api",
+        "graphql",
+        "-f",
+        f"query={m}",
+        "-f",
+        f"i={blocked_id}",
+        "-f",
+        f"b={blocking_id}",
+    )
 
 
 def find_existing_by_title(repo, title):
-    out = run("gh", "issue", "list", "--repo", repo, "--state", "all", "--search", f'in:title "{title}"', "--json", "number,title")
+    out = run(
+        "gh",
+        "issue",
+        "list",
+        "--repo",
+        repo,
+        "--state",
+        "all",
+        "--search",
+        f'in:title "{title}"',
+        "--json",
+        "number,title",
+    )
     for row in json.loads(out):
         if row["title"] == title:
             return row["number"]
@@ -69,7 +107,9 @@ def find_existing_by_title(repo, title):
 
 
 def ensure_labels(repo, labels, dry_run):
-    existing = {row["name"] for row in run_json("gh", "label", "list", "--repo", repo, "--json", "name")}
+    existing = {
+        row["name"] for row in run_json("gh", "label", "list", "--repo", repo, "--json", "name")
+    }
     for label in sorted(labels - existing):
         print(f"  + label {label}")
         if not dry_run:
@@ -77,7 +117,12 @@ def ensure_labels(repo, labels, dry_run):
 
 
 def ensure_milestones(repo, milestone_map, dry_run):
-    existing = {row["title"] for row in run_json("gh", "api", f"repos/{repo}/milestones", "--paginate", "-X", "GET", "-f", "state=all")}
+    existing = {
+        row["title"]
+        for row in run_json(
+            "gh", "api", f"repos/{repo}/milestones", "--paginate", "-X", "GET", "-f", "state=all"
+        )
+    }
     titles = {}
     for key, name in milestone_map.items():
         title = f"{key}: {name}"
@@ -142,7 +187,11 @@ def main():
 
     gmap = load_map()
 
-    all_labels = {l for i in data["issues"] for l in i["labels"]} | {"epic", "decision", "data-safety"}
+    all_labels = {l for i in data["issues"] for l in i["labels"]} | {
+        "epic",
+        "decision",
+        "data-safety",
+    }
     print("Ensuring labels...")
     ensure_labels(repo, all_labels, dry_run)
 
@@ -159,14 +208,18 @@ def main():
         "Data safety is a hard constraint throughout: nothing that deletes or moves an original "
         "photo/video runs unattended. See issues labeled `data-safety`."
     )
-    program_number, _ = create_issue(repo, "Photo Vault: Program", program_body, ["epic"], None, dry_run, gmap, "program")
+    program_number, _ = create_issue(
+        repo, "Photo Vault: Program", program_body, ["epic"], None, dry_run, gmap, "program"
+    )
     program_id = node_id(repo, program_number) if (not dry_run and program_number) else None
 
     milestone_issue_ids = {}
     for key, name in data["meta"]["milestones"].items():
         title = f"{key}: {name} (epic)"
         body = f"Milestone epic for {key} ({name}). Sub-issues are the individual work items in this milestone."
-        number, created = create_issue(repo, title, body, ["epic"], milestone_titles.get(key), dry_run, gmap, f"epic:{key}")
+        number, created = create_issue(
+            repo, title, body, ["epic"], milestone_titles.get(key), dry_run, gmap, f"epic:{key}"
+        )
         milestone_issue_ids[key] = number
         if program_id and number and not dry_run:
             add_sub_issue(dry_run, program_id, node_id(repo, number))
@@ -176,7 +229,16 @@ def main():
     for issue in data["issues"]:
         title = issue["title"]
         body = issue_body(issue)
-        number, created = create_issue(repo, title, body, issue["labels"], milestone_titles.get(issue["milestone"]), dry_run, gmap, issue["id"])
+        number, created = create_issue(
+            repo,
+            title,
+            body,
+            issue["labels"],
+            milestone_titles.get(issue["milestone"]),
+            dry_run,
+            gmap,
+            issue["id"],
+        )
         number_by_id[issue["id"]] = number
         parent_epic_number = milestone_issue_ids.get(issue["milestone"])
         if not dry_run and number and parent_epic_number:
@@ -198,7 +260,16 @@ def main():
         if "answered" in issue["labels"]:
             number = number_by_id.get(issue["id"])
             if number and not dry_run:
-                run("gh", "issue", "close", str(number), "--repo", repo, "-c", "Answered; captured in this issue's body. PLAN.md retired.")
+                run(
+                    "gh",
+                    "issue",
+                    "close",
+                    str(number),
+                    "--repo",
+                    repo,
+                    "-c",
+                    "Answered; captured in this issue's body. PLAN.md retired.",
+                )
 
     if not dry_run:
         save_map(gmap)
