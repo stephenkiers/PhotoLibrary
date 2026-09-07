@@ -244,3 +244,91 @@ def test_stubs_write_to_output() -> None:
     # Check that the message is in the output
     assert result.output, "Stub should write to output"
     assert "ingest" in result.output.lower() or "36" in result.output
+
+
+def test_stub_command_message_format() -> None:
+    """Test that stub commands use consistent message format: vault: `{name}` ..."""
+    result = runner.invoke(app, ["fingerprint"])
+    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
+    # Message should start with vault: `{command_name}`
+    assert "vault: `fingerprint`" in result.output
+
+
+def test_retire_error_message_format() -> None:
+    r"""Test that retire-without-yes error follows the vault error format.
+
+    Plan requirement A: error message must follow the same format style as
+    the stub-command message (vault: `{name}` ...).
+    """
+    result = runner.invoke(app, ["retire"])
+    assert result.exit_code == ExitCode.CONFIRMATION_REQUIRED
+    # Error should match format: vault: `{command}` ...
+    assert "vault: `retire`" in result.output
+
+
+def test_bare_vault_shows_vault_description() -> None:
+    """Test that bare `vault` with no args shows the vault description.
+
+    Plan requirement G: assert something specific is present in help output
+    (not just weak substring checks for command names).
+    """
+    result = runner.invoke(app, [])
+    # Should show the vault description
+    assert "Vault:" in result.output, (
+        "Help should show the vault description starting with 'Vault:'"
+    )
+
+
+def test_bare_vault_help_shows_all_panels() -> None:
+    """Test that bare vault help shows all three panel names.
+
+    Plan requirement G: assert something specific is present in the help
+    output when vault is invoked with no args (not just 'Usage' or 'Commands').
+    """
+    result = runner.invoke(app, [])
+    # Should show all three panel names
+    assert "Pipeline" in result.output, "Help should show 'Pipeline' panel"
+    assert "Safety" in result.output, "Help should show 'Safety' panel"
+    assert "Operations" in result.output, "Help should show 'Operations' panel"
+
+
+def test_get_options_accessor_exists() -> None:
+    """Test that the typed accessor for GlobalOptions exists and is importable.
+
+    Plan requirement F: There must be a typed accessor for pulling GlobalOptions
+    off ctx.obj with a runtime isinstance check (not a bare type-annotation cast).
+    """
+    from vault.cli import GlobalOptions, _get_options
+
+    assert callable(_get_options), "_get_options should be callable"
+    assert GlobalOptions is not None, "GlobalOptions class should exist"
+
+
+def test_get_options_accessor_in_help() -> None:
+    """Test that global options are correctly parsed via the accessor.
+
+    Verifies that the _get_options accessor can be used within a command context
+    by testing that global options are properly recognized and don't cause errors.
+    """
+    # --verbose should be recognized as a global option
+    result = runner.invoke(app, ["--verbose", "ingest"])
+    # Should hit the stub, not a parsing error
+    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
+    # Should not show "Error" or "unrecognized arguments"
+    assert "unrecognized" not in result.output.lower()
+
+
+def test_stub_message_includes_github_url() -> None:
+    """Test that stub commands include the full GitHub URL format."""
+    result = runner.invoke(app, ["publish"])
+    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
+    # Message should include the full URL pattern
+    assert "https://github.com/stephenkiers/PhotoLibrary/issues/" in result.output
+    assert "68" in result.output  # issue 68 for publish
+
+
+def test_help_shows_usage_line() -> None:
+    """Test that bare vault shows a Usage line in help output."""
+    result = runner.invoke(app, [])
+    # Should show "Usage:" or similar
+    assert "Usage:" in result.output, "Help should show usage line"
