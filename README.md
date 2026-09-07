@@ -58,4 +58,4 @@ For more details, see `.pre-commit-config.yaml`.
 
 ## License
 
-Personal use only.
+Not yet decided (see `docs/decisions.md`).
