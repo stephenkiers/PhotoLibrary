@@ -1,0 +1,44 @@
+# Runtime config (vault.toml is the real file; vault.example.toml is planned)
+vault.toml
+.env
+
+# Database files
+*.db
+*.db-wal
+*.db-shm
+
+# Data files
+*.jsonl
+
+# Project-specific directories
+staging/
+archive/
+proxies/
+
+# Virtual environments
+.venv/
+venv/
+
+# Python cache and bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Python packaging
+dist/
+build/
+*.egg-info/
+
+# Tool caches
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store

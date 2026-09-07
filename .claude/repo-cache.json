@@ -1,0 +1,24 @@
+{
+  "version": 2,
+  "detected": {
+    "packageManager": "none",
+    "languages": ["python"],
+    "monorepo": false,
+    "ciConfig": ".github/workflows/checks.yml",
+    "buildTool": "uv"
+  },
+  "commands": {
+    "install": "uv sync",
+    "format": "uv run ruff format --check .",
+    "lint": "uv run ruff check .",
+    "vet": null,
+    "typecheck": "uv run mypy",
+    "test": "uv run pytest",
+    "build": null,
+    "check": null
+  },
+  "gotchas": [],
+  "parallelizable": ["lint", "typecheck"],
+  "lastUpdated": "2026-09-07T00:00:00Z",
+  "lastFullRefresh": "2026-09-07T00:00:00Z"
+}
