@@ -1,0 +1,47 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "photovault"
+version = "0.1.0"
+description = "A photo vault management CLI"
+requires-python = ">=3.12"
+dependencies = ["typer>=0.27,<1.0"]
+authors = [{name = "Stephen Kiers", email = "stephen@lotl.co"}]
+
+# NOTE: When a future ticket adds `osxphotos`, it must carry a platform marker
+# (`osxphotos>=0.76; sys_platform == "darwin"`) or live in a `macos` extra,
+# because uv produces a universal lockfile and a bare entry would make Linux
+# resolution attempt `pyobjc`.
+
+[project.scripts]
+vault = "vault.cli:app"
+
+[dependency-groups]
+dev = ["mypy", "pytest", "ruff", "pre-commit"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "ANN", "TID"]
+
+[tool.ruff.lint.per-file-ignores]
+# One-shot tooling scripts, not product code (Decision 10): still ruff-linted
+# and formatted, but not held to the annotation/line-length/naming bar that
+# applies to src/ and tests/.
+"scripts/*.py" = ["ANN001", "ANN002", "ANN201", "E501", "E741", "E743", "RUF059", "SIM115", "E701", "E702"]
+
+[tool.mypy]
+strict = true
+warn_unreachable = true
+enable_error_code = ["redundant-expr", "possibly-undefined", "truthy-bool"]
+files = ["src", "tests"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vault"]
