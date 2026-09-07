@@ -60,12 +60,8 @@ def main(
         Path | None,
         typer.Option("--config", help="Path to vault configuration file"),
     ] = None,
-    dry_run: Annotated[
-        bool, typer.Option("--dry-run", help="Run without making changes")
-    ] = False,
-    yes: Annotated[
-        bool, typer.Option("--yes", "-y", help="Assume yes for all prompts")
-    ] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Run without making changes")] = False,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Assume yes for all prompts")] = False,
     verbose: Annotated[
         int,
         typer.Option("--verbose", "-v", count=True, help="Increase verbosity"),
