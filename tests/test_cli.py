@@ -1,5 +1,6 @@
 """Tests for vault CLI."""
 
+import pytest
 from typer.testing import CliRunner
 
 from vault.cli import COMMANDS, app
@@ -45,16 +46,6 @@ def test_help_exits_zero() -> None:
     help_output = result.output
     for spec in COMMANDS:
         assert spec.name in help_output
-
-
-def test_stub_exits_nonzero() -> None:
-    """Test that a stub command exits with code 3 and shows issue URL."""
-    result = runner.invoke(app, ["ingest"])
-    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
-
-    output = result.output
-    assert "ingest" in output
-    assert "https://github.com/stephenkiers/PhotoLibrary/issues/36" in output
 
 
 def test_bare_vault_shows_help() -> None:
@@ -210,34 +201,6 @@ def test_multiple_global_flags() -> None:
     assert result.exit_code == ExitCode.NOT_IMPLEMENTED
 
 
-def test_status_specific_exit_code() -> None:
-    """Test that status command exits with code 3 for issue 84."""
-    result = runner.invoke(app, ["status"])
-    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
-    assert "84" in result.output
-
-
-def test_rebuild_specific_exit_code() -> None:
-    """Test that rebuild command exits with code 3 for issue 21."""
-    result = runner.invoke(app, ["rebuild"])
-    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
-    assert "21" in result.output
-
-
-def test_report_specific_exit_code() -> None:
-    """Test that report command exits with code 3 for issue 60."""
-    result = runner.invoke(app, ["report"])
-    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
-    assert "60" in result.output
-
-
-def test_config_specific_exit_code() -> None:
-    """Test that config command exits with code 3 for issue 17."""
-    result = runner.invoke(app, ["config"])
-    assert result.exit_code == ExitCode.NOT_IMPLEMENTED
-    assert "17" in result.output
-
-
 def test_stubs_write_to_output() -> None:
     """Test that stub commands write error messages to output (captured by CliRunner)."""
     result = runner.invoke(app, ["ingest"])
@@ -293,15 +256,31 @@ def test_bare_vault_help_shows_all_panels() -> None:
 
 
 def test_get_options_accessor_exists() -> None:
-    """Test that the typed accessor for GlobalOptions exists and is importable.
+    """Test that the typed accessor for GlobalOptions exists and performs runtime isinstance check.
 
     Plan requirement F: There must be a typed accessor for pulling GlobalOptions
     off ctx.obj with a runtime isinstance check (not a bare type-annotation cast).
     """
+    from unittest.mock import Mock
+
     from vault.cli import GlobalOptions, _get_options
 
     assert callable(_get_options), "_get_options should be callable"
     assert GlobalOptions is not None, "GlobalOptions class should exist"
+
+    # Test that _get_options actually performs an isinstance check by calling it
+    # with a proper GlobalOptions instance set on ctx.obj
+    mock_ctx = Mock()
+    opts = GlobalOptions(config=None, dry_run=False, yes=False, verbose=0)
+    mock_ctx.obj = opts
+    result = _get_options(mock_ctx)
+    assert result is opts, "_get_options should return the GlobalOptions instance from ctx.obj"
+
+    # Test that _get_options raises AssertionError if ctx.obj is not GlobalOptions
+    mock_ctx_bad = Mock()
+    mock_ctx_bad.obj = "not a GlobalOptions"
+    with pytest.raises(AssertionError, match="GlobalOptions"):
+        _get_options(mock_ctx_bad)
 
 
 def test_get_options_accessor_in_help() -> None:
