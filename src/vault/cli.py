@@ -3,7 +3,7 @@
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Literal, NamedTuple
+from typing import Annotated, Any, Literal, NamedTuple
 
 import typer
 
@@ -133,8 +133,8 @@ def show(
         raise typer.Exit(ExitCode.CONFIG_ERROR) from None
 
     if json_output:
-        # Output as JSON (secrets already redacted in model)
-        output = json.dumps(config.model_dump(mode="json"), indent=2)
+        # Output as JSON with secrets redacted/annotated
+        output = _format_json_output(config)
         typer.echo(output)
     else:
         # Human-readable output
@@ -176,6 +176,37 @@ def validate(ctx: typer.Context) -> None:
     raise typer.Exit(ExitCode.OK)
 
 
+def _format_json_output(config: Config) -> str:
+    """Format a Config object for JSON output with secrets redacted.
+
+    Args:
+        config: The Config instance to format.
+
+    Returns:
+        JSON string representation of the config.
+    """
+    config_dict = config.model_dump(mode="json")
+
+    # Helper to recursively update dict with resolved secret information
+    def _annotate_secrets(obj: dict[str, Any]) -> None:
+        for key, value in list(obj.items()):
+            if key.endswith("_env") and isinstance(value, str):
+                # Check if this env var was actually resolved
+                if config.get_resolved_secret(value):
+                    # Replace with annotation showing it's resolved and from which env var
+                    obj[key] = f"<set from {value}>"
+
+            elif isinstance(value, dict):
+                _annotate_secrets(value)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, dict):
+                        _annotate_secrets(item)
+
+    _annotate_secrets(config_dict)
+    return json.dumps(config_dict, indent=2)
+
+
 def _format_config_output(config: Config) -> str:
     """Format a Config object for human-readable display."""
     lines: list[str] = []
@@ -200,7 +231,8 @@ def _format_config_output(config: Config) -> str:
             lines.append(f"  [[sources.{source.name}]]")
             lines.append(f"    kind: {source.kind}")
             lines.append(f"    path: {source.path}")
-            if source.immich_api_key_env:
+            if source.immich_api_key_env and config.get_resolved_secret(source.immich_api_key_env):
+                # Only show "set from" if the env var was actually resolved
                 lines.append(f"    immich_api_key_env: <set from {source.immich_api_key_env}>")
         lines.append("")
 
@@ -233,7 +265,10 @@ def _format_config_output(config: Config) -> str:
         lines.append("[publish]")
         if config.publish.immich_url:
             lines.append(f"  immich_url: {config.publish.immich_url}")
-        if config.publish.immich_api_key_env:
+        if config.publish.immich_api_key_env and config.get_resolved_secret(
+            config.publish.immich_api_key_env
+        ):
+            # Only show "set from" if the env var was actually resolved
             lines.append(f"  immich_api_key_env: <set from {config.publish.immich_api_key_env}>")
         lines.append(f"  grace_days: {config.publish.grace_days}")
         lines.append(f"  shared_library_policy: {config.publish.shared_library_policy}")

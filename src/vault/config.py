@@ -225,6 +225,18 @@ class Config(BaseModel):
         canonical_json = json.dumps(config_dict, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical_json.encode()).hexdigest()
 
+    def get_resolved_secret(self, env_var_name: str) -> Secret | None:
+        """Get a resolved secret by its environment variable name.
+
+        Args:
+            env_var_name: Name of the environment variable (e.g., 'VAULT_IMMICH_API_KEY').
+
+        Returns:
+            The Secret object if resolved and present, None otherwise.
+        """
+        resolved_secrets: dict[str, Secret] = getattr(self, "_resolved_secrets", {})
+        return resolved_secrets.get(env_var_name)
+
 
 def load_config(path: Path) -> Config:
     """Load and validate configuration from a TOML file.
@@ -279,31 +291,56 @@ def load_config(path: Path) -> Config:
 def _resolve_secrets(config: Config) -> None:
     """Resolve secret environment variables in the config.
 
-    This modifies the config in place, wrapping secret values in Secret objects.
-    """
+    Walks the config tree, finds all *_env fields, and resolves them from
+    environment variables. Stores resolved secrets in a _resolved_secrets dict
+    keyed by environment variable name. Raises VaultConfigError if any
+    referenced env vars are missing.
 
-    # Helper to recursively process the config
-    def _process_model(obj: BaseModel) -> None:
+    Args:
+        config: The Config instance to resolve secrets for.
+
+    Raises:
+        VaultConfigError: If any environment variables referenced in *_env fields
+            are not set in the environment.
+    """
+    resolved_secrets: dict[str, Secret] = {}
+    missing_env_vars: list[tuple[str, str]] = []
+
+    # Helper to recursively process the config tree
+    def _process_model(obj: BaseModel, path_prefix: str = "") -> None:
         for field_name in obj.model_fields:
             field_value = getattr(obj, field_name, None)
+            current_path = f"{path_prefix}.{field_name}" if path_prefix else field_name
 
             if isinstance(field_value, BaseModel):
-                _process_model(field_value)
+                _process_model(field_value, current_path)
             elif isinstance(field_value, list):
-                for item in field_value:
+                for i, item in enumerate(field_value):
                     if isinstance(item, BaseModel):
-                        _process_model(item)
+                        _process_model(item, f"{current_path}[{i}]")
 
-            # Handle *_env fields specially
+            # Handle *_env fields: resolve from environment
             if field_name.endswith("_env") and isinstance(field_value, str):
-                env_value = os.environ.get(field_value)
-                if env_value:
-                    # Replace the env var name with a Secret object
-                    # Note: Since Config is frozen, we can't actually modify it here
-                    # So we just note which secrets are set
-                    pass
+                env_var_name = field_value
+                env_value = os.environ.get(env_var_name)
+                if env_value is None:
+                    missing_env_vars.append((current_path, env_var_name))
+                else:
+                    # Key by env var name for easy lookup in CLI
+                    resolved_secrets[env_var_name] = Secret(env_value)
 
     _process_model(config)
+
+    # If any env vars were missing, raise an error with all missing ones
+    if missing_env_vars:
+        errors = [
+            (path, f"environment variable '{env_var}' not set")
+            for path, env_var in missing_env_vars
+        ]
+        raise VaultConfigError(errors)
+
+    # Attach resolved secrets to the frozen config using object.__setattr__
+    object.__setattr__(config, "_resolved_secrets", resolved_secrets)
 
 
 def fs_preflight(config: Config) -> list[str]:
