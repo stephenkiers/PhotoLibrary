@@ -189,6 +189,15 @@ class Config(BaseModel):
     @model_validator(mode="after")
     def check_no_overlapping_paths(self) -> "Config":
         """Verify that configured paths don't overlap."""
+
+        def _is_subpath(a: Path, b: Path) -> bool:
+            """Check if path a is a subpath of path b (including equal paths)."""
+            try:
+                a.relative_to(b)
+                return True
+            except ValueError:
+                return False
+
         # Collect all paths
         all_paths: dict[str, Path] = {}
 
@@ -205,16 +214,10 @@ class Config(BaseModel):
         for i, (name1, path1) in enumerate(paths_list):
             for name2, path2 in paths_list[i + 1 :]:
                 # Check if path1 is inside path2 or vice versa
-                try:
-                    path1.relative_to(path2)
+                if _is_subpath(path1, path2):
                     raise ValueError(f"Path '{name1}' ({path1}) is inside '{name2}' ({path2})")
-                except ValueError:
-                    pass
-                try:
-                    path2.relative_to(path1)
+                if _is_subpath(path2, path1):
                     raise ValueError(f"Path '{name2}' ({path2}) is inside '{name1}' ({path1})")
-                except ValueError:
-                    pass
 
         return self
 

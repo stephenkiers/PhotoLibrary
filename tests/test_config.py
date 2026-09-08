@@ -445,16 +445,34 @@ def test_malformed_toml_with_invalid_section(temp_dir: Path) -> None:
 
 
 def test_fs_preflight_detects_overlapping_paths(temp_dir: Path) -> None:
-    """Test that fs_preflight detects overlapping archive/staging paths."""
+    """Test that Config validation rejects overlapping archive/staging paths."""
     archive = temp_dir / "archive"
     archive.mkdir(parents=True)
     # staging is a subdirectory of archive
     staging = archive / "staging"
     staging.mkdir()
 
-    # fs_preflight is tested through vault config validate CLI
-    # This test is a placeholder for overlapping path detection
-    assert staging.parent == archive
+    config_file = temp_dir / "vault.toml"
+    config_text = minimal_valid_config(str(archive), str(staging))
+    config_file.write_text(config_text)
+
+    # Should raise VaultConfigError due to overlapping paths
+    with pytest.raises(VaultConfigError):
+        load_config(config_file)
+
+
+def test_config_rejects_identical_paths(temp_dir: Path) -> None:
+    """Test that Config validation rejects archive and staging set to identical paths."""
+    same_path = temp_dir / "same"
+    same_path.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    config_text = minimal_valid_config(str(same_path), str(same_path))
+    config_file.write_text(config_text)
+
+    # Should raise VaultConfigError because archive and staging are the same
+    with pytest.raises(VaultConfigError):
+        load_config(config_file)
 
 
 def test_cli_config_validate_reports_missing_paths(temp_dir: Path) -> None:

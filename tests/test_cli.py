@@ -59,8 +59,13 @@ def test_all_commands_exit_with_issue_number() -> None:
     """Test that all 17 commands exit with code 3 and reference their issue numbers.
 
     Note: retire requires --yes before it can proceed to the stub exit.
+    Note: config is excluded since it's now a real sub-app, not a stub exit command.
     """
     for spec in COMMANDS:
+        # Skip config, which is a real sub-app, not a stub exit command
+        if spec.name == "config":
+            continue
+
         if spec.requires_confirmation:
             # Commands requiring confirmation need --yes flag
             result = runner.invoke(app, ["--yes", spec.name])
@@ -97,10 +102,20 @@ def test_panel_groupings_in_help() -> None:
 
 
 def _registered_panel(name: str) -> str | None:
-    """Look up the rich_help_panel Typer actually registered a command under."""
+    """Look up the rich_help_panel Typer actually registered a command under.
+
+    Checks both registered_commands and registered_groups (for sub-apps).
+    """
+    # Check regular commands
     for command_info in app.registered_commands:
         if command_info.name == name:
             return command_info.rich_help_panel
+
+    # Check sub-apps (groups) registered via add_typer
+    for group_info in app.registered_groups:
+        if group_info.name == name:
+            return group_info.rich_help_panel
+
     return None
 
 
