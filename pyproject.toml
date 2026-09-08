@@ -7,7 +7,7 @@ name = "photovault"
 version = "0.1.0"
 description = "A photo vault management CLI"
 requires-python = ">=3.12"
-dependencies = ["typer>=0.27,<1.0"]
+dependencies = ["typer>=0.27,<1.0", "pydantic>=2,<3"]
 authors = [{name = "Stephen Kiers", email = "stephen@lotl.co"}]
 
 # NOTE: When a future ticket adds `osxphotos`, it must carry a platform marker

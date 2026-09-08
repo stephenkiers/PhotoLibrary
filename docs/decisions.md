@@ -2,6 +2,21 @@
 
 This document tracks architectural and design decisions for the vault project.
 
+## M0-05
+
+**Configuration: Single vault.toml with pydantic v2 validation and env-var secret resolution.**
+
+- **Single shared config file**: One `vault.toml` at project root. No per-host overlays or layered configuration.
+- **Unknown keys are forbidden**: Pydantic `extra="forbid"` at every level catches typos immediately rather than silently using defaults.
+- **No general env-var override mechanism**: Environment variables are used for exactly one purpose — resolving named secrets (`*_env` fields like `immich_api_key_env`). There is no `VAULT_<SECTION>__<KEY>` override for arbitrary config values.
+- **Pydantic v2, plain (no pydantic-settings)**: TOML parsing via stdlib `tomllib` (Python 3.12), validation via pydantic v2.
+- **All six sections ship now**: `paths`, `sources`, `thresholds`, `proxy`, `publish`, `backup` — including a provisional `backup.targets` shape, documented as subject to change.
+- **Secret resolution is implemented now**: Schema fields ending in `_env` (e.g. `immich.api_key_env`) are validated as environment variable names (`^[A-Z][A-Z0-9_]*$`), then resolved from `os.environ` into a `Secret` wrapper that redacts `repr()`/`str()`.
+- **`vault config show` never prints resolved secret values**: Output shows that a secret resolved and which env var it came from (e.g. `<set from VAULT_IMMICH_API_KEY>`), never the value itself.
+- **`vault config validate` checks the filesystem** (separate from schema validation): Validates schema, then runs a preflight check (paths exist/reachable, no overlapping paths). Schema loading itself remains pure (no filesystem access), so other commands aren't broken by an unmounted NAS when they don't touch that path.
+- **`Config.fingerprint()` method**: Stable canonical serialization + SHA-256 hash for recording which config governed a destructive operation. Included now for future M0-08 (append-only journal).
+- **macOS Keychain integration deferred**: Secret resolution currently uses only environment variables. Keychain support is a future enhancement, not blocking this ticket.
+
 ## M0-12
 
 Decision pending — see issue tracker.
