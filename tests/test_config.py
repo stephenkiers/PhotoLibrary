@@ -1554,7 +1554,9 @@ def test_config_proxy_dimensions_min_valid_value(
 # ============================================================================
 
 
-def test_config_source_kind_invalid_rejected(temp_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_config_source_kind_invalid_rejected(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Test that invalid source kind values are rejected."""
     archive = temp_dir / "paths" / "archive"
     staging = temp_dir / "paths" / "staging"
@@ -1673,9 +1675,7 @@ def test_schema_error_vs_missing_env_var_error_format(
 # ============================================================================
 
 
-def test_resolved_secret_uses_secretstr(
-    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolved_secret_uses_secretstr(temp_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that resolved secrets are backed by pydantic.SecretStr.
 
     This verifies that the secret marker is at the type level, not just
@@ -1697,50 +1697,28 @@ def test_resolved_secret_uses_secretstr(
 
     config = load_config(config_file)
 
-    # The publish config's immich_api_key should be a SecretStr instance
-    if hasattr(config.publish, "immich_api_key"):
-        assert isinstance(config.publish.immich_api_key, SecretStr), (
-            f"publish.immich_api_key should be SecretStr, got {type(config.publish.immich_api_key)}"
-        )
+    # The resolved secret (looked up by the env var name the field references)
+    # should be a SecretStr instance, not a raw string.
+    resolved = config.get_resolved_secret("VAULT_IMMICH_API_KEY")
+    assert isinstance(resolved, SecretStr), f"expected SecretStr, got {type(resolved)}"
+    assert resolved.get_secret_value() == secret_value
 
 
-def test_secret_field_detection_via_type(
-    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_secret_field_detection_via_type() -> None:
     """Test that secret fields are detectable via type inspection (not string-suffix naming).
 
-    The test verifies that there's a way to detect which fields are secrets
-    at the schema level, not by checking for '_env' suffix.
+    Verifies there's a schema-level marker identifying which fields are secret
+    references, rather than the detection relying on a bare '_env' name suffix.
     """
-    archive = temp_dir / "paths" / "archive"
-    staging = temp_dir / "paths" / "staging"
-    archive.mkdir(parents=True)
-    staging.mkdir(parents=True)
-
-    config_file = temp_dir / "vault.toml"
-    config_text = minimal_valid_config(str(archive), str(staging))
-    config_file.write_text(config_text)
-
-    monkeypatch.setenv("VAULT_IMMICH_API_KEY", "test-key")
-
-    config = load_config(config_file)
-
-    # Inspect the config schema to find secret-marked fields
-    # In pydantic v2, this is done via model_fields on the class
     from vault.config import PublishConfig
+
     publish_fields = PublishConfig.model_fields
     assert "immich_api_key_env" in publish_fields
     field_info = publish_fields["immich_api_key_env"]
-    # The field should have a type-level marker (not just naming convention)
-    # Check for metadata that indicates this is a secret field
-    has_secret_marker = (
-        hasattr(field_info, "metadata")
-        and any("SecretMarker" in str(m) or "secret" in str(m).lower() for m in field_info.metadata)
+    has_secret_marker = any(
+        "SecretMarker" in str(m) or "secret" in str(m).lower() for m in field_info.metadata
     )
-    assert has_secret_marker, (
-        f"Secret field should have _SecretMarker metadata. "
-        f"Found metadata: {field_info.metadata if hasattr(field_info, 'metadata') else 'none'}"
-    )
+    assert has_secret_marker, f"Found metadata: {field_info.metadata}"
 
 
 # ============================================================================
@@ -1748,9 +1726,7 @@ def test_secret_field_detection_via_type(
 # ============================================================================
 
 
-def test_config_show_text_redacts_secrets(
-    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_config_show_text_redacts_secrets(temp_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that vault config show (text format) redacts secrets consistently."""
     archive = temp_dir / "paths" / "archive"
     staging = temp_dir / "paths" / "staging"
@@ -1773,9 +1749,7 @@ def test_config_show_text_redacts_secrets(
     assert "VAULT_IMMICH_API_KEY" in result.output or "<set from" in result.output
 
 
-def test_config_show_json_redacts_secrets(
-    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_config_show_json_redacts_secrets(temp_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Test that vault config show --json redacts secrets consistently."""
     archive = temp_dir / "paths" / "archive"
     staging = temp_dir / "paths" / "staging"
