@@ -1,0 +1,69 @@
+# Vault Configuration File (vault.toml)
+#
+# This file defines the structure and behavior of your photo vault.
+# Paths may use ~ (expanded to home directory) and are resolved to absolute paths.
+# Secrets are never stored in vault.toml; instead, use *_env fields to reference
+# environment variables (e.g., VAULT_IMMICH_API_KEY).
+
+schema_version = 1
+
+# [paths]
+# Required section defining core storage paths.
+[paths]
+archive = "/path/to/archive"          # Vault archive (primary photo store)
+staging = "/path/to/staging"          # Working directory for import/processing
+proxies = "/path/to/proxies"          # Generated proxy files (thumbnails, previews)
+catalog = "/path/to/catalog/db.sqlite" # Photo catalog database
+
+# [sources]
+# Photo sources for ingestion. List of source definitions.
+# Uncomment and customize to add sources.
+# [[sources]]
+# name = "iphone"
+# kind = "immich"
+# path = "/Volumes/Photos/iPhone"
+# immich_api_key_env = "VAULT_IMMICH_API_KEY"
+
+# [thresholds]
+# Quality and age thresholds for photo selection (provisional; pending calibration).
+# All fields optional; omit to skip threshold filtering.
+[thresholds]
+min_quality = 0.75      # Quality score threshold (0.0–1.0)
+max_age_days = 365      # Reject photos older than this many days
+
+# [proxy]
+# Proxy generation profiles for review and publish workflows.
+[proxy]
+[proxy.review]
+width = 1920
+height = 1440
+quality = 85            # JPEG quality (1–100)
+
+[proxy.publish]
+width = 2560
+height = 1920
+quality = 90
+
+# [publish]
+# Immich publication settings.
+[publish]
+immich_url = "https://photos.example.com"
+immich_api_key_env = "VAULT_IMMICH_API_KEY"
+grace_days = 7                                  # Days to hold before retiring
+shared_library_policy = "skip"                  # skip | include | include_no_retire
+
+# [backup]
+# Backup targets (provisional; schema subject to change).
+# Multiple targets are supported; at least one is recommended.
+[backup]
+[[backup.targets]]
+name = "nas"
+kind = "rsync"
+destination = "/mnt/nas/vault-backup"
+retention_days = 30
+
+[[backup.targets]]
+name = "external"
+kind = "restic"
+destination = "/Volumes/external-drive/vault-backup"
+retention_days = 90
