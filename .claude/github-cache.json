@@ -37,5 +37,13 @@
       "medium": 11,
       "low": 12
     }
+  },
+  "pr": {
+    "number": 101,
+    "url": "https://github.com/stephenkiers/PhotoLibrary/pull/101",
+    "state": "OPEN"
+  },
+  "stack": {
+    "isStacked": false
   }
 }
