@@ -16,7 +16,7 @@ This document tracks architectural and design decisions for the vault project.
 - **`load_config` fails fast if *_env variables are not set**: Any `*_env` field that references a missing environment variable causes `load_config` to raise `VaultConfigError` immediately. This means even `vault config show` requires all referenced secrets to be present in the environment, not just commands that use them.
 - **`vault config validate` checks the filesystem** (separate from schema validation): Validates schema, then runs a preflight check (paths exist/reachable, no overlapping paths). Schema loading itself remains pure (no filesystem access), so other commands aren't broken by an unmounted NAS when they don't touch that path.
 - **`Config.fingerprint()` method**: Stable canonical serialization + SHA-256 hash for recording which config governed a destructive operation. Included now for future M0-08 (append-only journal).
-- **macOS Keychain integration deferred**: Secret resolution currently uses only environment variables. Keychain support is a future enhancement, not blocking this ticket.
+- **macOS Keychain integration deferred** (tracked in M0-21): Secret resolution currently uses only environment variables. Keychain support is a future enhancement, not blocking this ticket.
 
 ## M0-12
 

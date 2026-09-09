@@ -16,6 +16,9 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
+    SecretStr,
+    ValidationError,
     field_validator,
     model_validator,
 )
@@ -23,28 +26,33 @@ from pydantic import (
 from vault.errors import VaultConfigError
 
 
-class Secret:
-    """Wrapper for secret values that redacts repr() and str()."""
+# Marker class for env-var secret reference fields
+class _SecretMarker:
+    """Marker for fields that reference environment variable secrets."""
 
-    def __init__(self, value: str) -> None:
-        """Initialize a secret with the given value."""
-        self._value = value
-
-    def get_secret_value(self) -> str:
-        """Return the actual secret value."""
-        return self._value
-
-    def __repr__(self) -> str:
-        """Return a redacted representation."""
-        return "<Secret: redacted>"
-
-    def __str__(self) -> str:
-        """Return a redacted string."""
-        return "<Secret: redacted>"
+    pass
 
 
-# Custom type for non-negative integers
+# Custom types
 NonNegativeInt = Annotated[int, Field(ge=0)]
+PositiveInt = Annotated[int, Field(gt=0)]
+
+
+# Environment variable name validator
+def _validate_env_var_name_format(v: str) -> str:
+    """Validate that env var names match ^[A-Z][A-Z0-9_]*$."""
+    if not re.match(r"^[A-Z][A-Z0-9_]*$", v):
+        raise ValueError(f"Invalid env var name: {v}")
+    return v
+
+
+# Type for env var secret references. The `| None` must live *inside* the
+# Annotated (not appended outside it) — pydantic v2 drops Annotated metadata
+# when a field's outer type is `Annotated[str, ...] | None`, so the marker
+# below would silently vanish for every optional secret-ref field otherwise.
+EnvVarSecretRef = Annotated[
+    str | None, Field(description="Name of an env var holding a secret"), _SecretMarker()
+]
 
 
 class PathsConfig(BaseModel):
@@ -74,14 +82,19 @@ class SourceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     name: str
-    kind: str
+    kind: Literal["local", "immich"]
     path: Path
-    immich_api_key_env: str | None = None
+    immich_api_key_env: EnvVarSecretRef = None
 
     @field_validator("path", mode="before")
     @classmethod
     def resolve_path(cls, v: str | Path) -> Path:
-        """Resolve and normalize path value."""
+        """Resolve and normalize path value.
+
+        Note: This handles required Path fields. Compare with PathsConfig.resolve_paths
+        which handles optional Path | None fields (hence the plural name and different
+        signature).
+        """
         if isinstance(v, Path):
             return v.expanduser().resolve()
         return Path(v).expanduser().resolve()
@@ -92,9 +105,7 @@ class SourceConfig(BaseModel):
         """Validate that env var names match ^[A-Z][A-Z0-9_]*$."""
         if v is None:
             return None
-        if not re.match(r"^[A-Z][A-Z0-9_]*$", v):
-            raise ValueError(f"Invalid env var name: {v}")
-        return v
+        return _validate_env_var_name_format(v)
 
 
 class ThresholdsConfig(BaseModel):
@@ -119,8 +130,8 @@ class ProxyProfile(BaseModel):
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    width: int
-    height: int
+    width: PositiveInt
+    height: PositiveInt
     quality: Annotated[int, Field(ge=1, le=100)]
 
 
@@ -139,7 +150,7 @@ class PublishConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     immich_url: str | None = None
-    immich_api_key_env: str | None = None
+    immich_api_key_env: EnvVarSecretRef = None
     grace_days: NonNegativeInt = 0
     shared_library_policy: Literal["skip", "include", "include_no_retire"] = "skip"
 
@@ -149,9 +160,7 @@ class PublishConfig(BaseModel):
         """Validate that env var names match ^[A-Z][A-Z0-9_]*$."""
         if v is None:
             return None
-        if not re.match(r"^[A-Z][A-Z0-9_]*$", v):
-            raise ValueError(f"Invalid env var name: {v}")
-        return v
+        return _validate_env_var_name_format(v)
 
 
 class BackupTarget(BaseModel):
@@ -186,14 +195,40 @@ class Config(BaseModel):
     publish: PublishConfig | None = None
     backup: BackupConfig | None = None
 
+    # Private attribute for resolved secrets
+    _resolved_secrets: dict[str, SecretStr] | None = PrivateAttr(default=None)
+
     @model_validator(mode="after")
     def check_no_overlapping_paths(self) -> "Config":
         """Verify that configured paths don't overlap."""
 
         def _is_subpath(a: Path, b: Path) -> bool:
-            """Check if path a is a subpath of path b (including equal paths)."""
+            """Check if path a is a subpath of path b (including equal paths).
+
+            Handles both existing paths (via os.path.samefile for case-insensitive
+            filesystems) and non-existent paths (via normalized string comparison).
+            """
+            # First try samefile for paths that exist on disk
+            if a.exists() and b.exists():
+                try:
+                    # Check if they're the same file/directory
+                    if os.path.samefile(a, b):
+                        return True
+                except (OSError, FileNotFoundError):
+                    pass
+
+            # Fall back to string-based comparison (case-normalized for case-insensitive FS)
             try:
                 a.relative_to(b)
+                return True
+            except ValueError:
+                pass
+
+            # Also check case-insensitive comparison for paths that don't exist
+            try:
+                a_normalized = Path(str(a).lower())
+                b_normalized = Path(str(b).lower())
+                a_normalized.relative_to(b_normalized)
                 return True
             except ValueError:
                 return False
@@ -209,6 +244,11 @@ class Config(BaseModel):
         if self.paths.catalog is not None:
             all_paths["catalog"] = self.paths.catalog
 
+        # Add paths from sources
+        if self.sources:
+            for i, source in enumerate(self.sources):
+                all_paths[f"sources[{i}].path"] = source.path
+
         # Check for overlaps
         paths_list = list(all_paths.items())
         for i, (name1, path1) in enumerate(paths_list):
@@ -222,22 +262,30 @@ class Config(BaseModel):
         return self
 
     def fingerprint(self) -> str:
-        """Return a stable hash of the canonical config serialization."""
+        """Return a stable hash of the canonical config serialization.
+
+        Note: The hash covers structural config only (via model_dump(mode="json")),
+        containing only *_env variable names, not resolved secret values. Rotating
+        a secret's value with the TOML text unchanged produces an identical
+        fingerprint. This is intentional for now (structural-config-only audit
+        scope) and may be revisited if a future milestone's design needs
+        secret-identity coverage.
+        """
         # Convert to JSON with sorted keys for canonical form
         config_dict = self.model_dump(mode="json")
         canonical_json = json.dumps(config_dict, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(canonical_json.encode()).hexdigest()
 
-    def get_resolved_secret(self, env_var_name: str) -> Secret | None:
+    def get_resolved_secret(self, env_var_name: str) -> SecretStr | None:
         """Get a resolved secret by its environment variable name.
 
         Args:
             env_var_name: Name of the environment variable (e.g., 'VAULT_IMMICH_API_KEY').
 
         Returns:
-            The Secret object if resolved and present, None otherwise.
+            The SecretStr object if resolved and present, None otherwise.
         """
-        resolved_secrets: dict[str, Secret] = getattr(self, "_resolved_secrets", {})
+        resolved_secrets = self._resolved_secrets if self._resolved_secrets is not None else {}
         return resolved_secrets.get(env_var_name)
 
 
@@ -261,28 +309,23 @@ def load_config(path: Path) -> Config:
             raw_config = tomllib.load(f)
     except FileNotFoundError:
         raise
+    except OSError as e:
+        raise VaultConfigError([(str(path), str(e))]) from e
     except tomllib.TOMLDecodeError as e:
         raise VaultConfigError([(str(path), str(e))]) from e
 
     # Validate with pydantic
     try:
         config = Config(**raw_config)
-    except Exception as e:
+    except ValidationError as e:
         # Convert pydantic validation errors to VaultConfigError
         errors: list[tuple[str, str]] = []
-
-        # Check if it's a pydantic validation error
-        if hasattr(e, "errors"):
-            for error_info in e.errors():
-                # Build dotted path from error location
-                loc = error_info.get("loc", ())
-                key_path = ".".join(str(x) for x in loc)
-                msg = error_info.get("msg", str(error_info))
-                errors.append((key_path, msg))
-        else:
-            # Fallback for non-pydantic errors
-            errors.append(("", str(e)))
-
+        for error_info in e.errors():
+            # Build dotted path from error location
+            loc = error_info.get("loc", ())
+            key_path = ".".join(str(x) for x in loc)
+            msg = error_info.get("msg", str(error_info))
+            errors.append((key_path, msg))
         raise VaultConfigError(errors) from e
 
     # Resolve secrets from environment
@@ -291,13 +334,46 @@ def load_config(path: Path) -> Config:
     return config
 
 
+def secret_env_field_names(config: Config) -> set[str]:
+    """Return the set of *_env field names that are marked as secrets.
+
+    This helper identifies all fields with the EnvVarSecretRef marker for use
+    in CLI redaction and formatting code.
+
+    Args:
+        config: The Config instance to inspect.
+
+    Returns:
+        Set of field names like {'immich_api_key_env'} found at any nesting level.
+    """
+    secret_fields: set[str] = set()
+
+    def _find_secret_fields(obj: BaseModel) -> None:
+        for field_name, field_info in type(obj).model_fields.items():
+            has_marker = any(isinstance(m, _SecretMarker) for m in field_info.metadata)
+            if has_marker:
+                secret_fields.add(field_name)
+
+            # Recursively check nested models
+            field_value = getattr(obj, field_name, None)
+            if isinstance(field_value, BaseModel):
+                _find_secret_fields(field_value)
+            elif isinstance(field_value, list):
+                for item in field_value:
+                    if isinstance(item, BaseModel):
+                        _find_secret_fields(item)
+
+    _find_secret_fields(config)
+    return secret_fields
+
+
 def _resolve_secrets(config: Config) -> None:
     """Resolve secret environment variables in the config.
 
-    Walks the config tree, finds all *_env fields, and resolves them from
-    environment variables. Stores resolved secrets in a _resolved_secrets dict
-    keyed by environment variable name. Raises VaultConfigError if any
-    referenced env vars are missing.
+    Walks the config tree, finds all fields marked with EnvVarSecretRef, and
+    resolves them from environment variables. Stores resolved secrets in a
+    _resolved_secrets dict keyed by environment variable name. Raises
+    VaultConfigError if any referenced env vars are missing.
 
     Args:
         config: The Config instance to resolve secrets for.
@@ -306,12 +382,12 @@ def _resolve_secrets(config: Config) -> None:
         VaultConfigError: If any environment variables referenced in *_env fields
             are not set in the environment.
     """
-    resolved_secrets: dict[str, Secret] = {}
+    resolved_secrets: dict[str, SecretStr] = {}
     missing_env_vars: list[tuple[str, str]] = []
 
     # Helper to recursively process the config tree
     def _process_model(obj: BaseModel, path_prefix: str = "") -> None:
-        for field_name in obj.model_fields:
+        for field_name, field_info in type(obj).model_fields.items():
             field_value = getattr(obj, field_name, None)
             current_path = f"{path_prefix}.{field_name}" if path_prefix else field_name
 
@@ -322,28 +398,29 @@ def _resolve_secrets(config: Config) -> None:
                     if isinstance(item, BaseModel):
                         _process_model(item, f"{current_path}[{i}]")
 
-            # Handle *_env fields: resolve from environment
-            if field_name.endswith("_env") and isinstance(field_value, str):
+            # Handle fields marked with EnvVarSecretRef: resolve from environment
+            is_secret_field = any(isinstance(m, _SecretMarker) for m in field_info.metadata)
+            if is_secret_field and isinstance(field_value, str):
                 env_var_name = field_value
                 env_value = os.environ.get(env_var_name)
                 if env_value is None:
                     missing_env_vars.append((current_path, env_var_name))
                 else:
                     # Key by env var name for easy lookup in CLI
-                    resolved_secrets[env_var_name] = Secret(env_value)
+                    resolved_secrets[env_var_name] = SecretStr(env_value)
 
     _process_model(config)
 
     # If any env vars were missing, raise an error with all missing ones
     if missing_env_vars:
         errors = [
-            (path, f"environment variable '{env_var}' not set")
+            (path, f"environment variable '{env_var}' not set (referenced by {path})")
             for path, env_var in missing_env_vars
         ]
         raise VaultConfigError(errors)
 
-    # Attach resolved secrets to the frozen config using object.__setattr__
-    object.__setattr__(config, "_resolved_secrets", resolved_secrets)
+    # Attach resolved secrets to the frozen config via PrivateAttr
+    config._resolved_secrets = resolved_secrets
 
 
 def fs_preflight(config: Config) -> list[str]:

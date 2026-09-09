@@ -13,6 +13,7 @@ from vault.config import (
     format_preflight_errors,
     fs_preflight,
     load_config,
+    secret_env_field_names,
 )
 from vault.errors import ExitCode, VaultConfigError
 
@@ -23,7 +24,7 @@ app = typer.Typer(no_args_is_help=True)
 class GlobalOptions:
     """Global options for the vault CLI."""
 
-    config: Path | None
+    config: Path
     dry_run: bool
     yes: bool
     verbose: int
@@ -89,6 +90,9 @@ def main(
     ] = 0,
 ) -> None:
     """Vault: photo library management CLI."""
+    # Default to ./vault.toml if not specified
+    if config is None:
+        config = Path("vault.toml")
     ctx.obj = GlobalOptions(config=config, dry_run=dry_run, yes=yes, verbose=verbose)
 
 
@@ -104,6 +108,30 @@ def _get_options(ctx: typer.Context) -> GlobalOptions:
     return ctx.obj
 
 
+def _load_config_or_exit(opts: GlobalOptions) -> Config:
+    """Load config from the specified path, or exit with an error.
+
+    Args:
+        opts: Global options containing config path.
+
+    Returns:
+        Loaded and validated Config instance.
+
+    Raises:
+        typer.Exit: If config cannot be loaded.
+    """
+    try:
+        return load_config(opts.config)
+    except VaultConfigError as e:
+        msg = format_config_errors(opts.config, e.errors)
+        typer.echo(msg, err=True)
+        raise typer.Exit(ExitCode.CONFIG_ERROR) from e
+    except FileNotFoundError:
+        msg = f"vault: config file not found: `{opts.config}`"
+        typer.echo(msg, err=True)
+        raise typer.Exit(ExitCode.CONFIG_ERROR) from None
+
+
 # Create the config sub-app
 config_app = typer.Typer(no_args_is_help=True, help="Manage vault configuration")
 
@@ -115,22 +143,7 @@ def show(
 ) -> None:
     """Show the effective vault configuration with secrets redacted."""
     opts = _get_options(ctx)
-
-    if not opts.config:
-        msg = "vault: `config show` requires --config option"
-        typer.echo(msg, err=True)
-        raise typer.Exit(ExitCode.CONFIG_ERROR)
-
-    try:
-        config = load_config(opts.config)
-    except VaultConfigError as e:
-        msg = format_config_errors(opts.config, e.errors)
-        typer.echo(msg, err=True)
-        raise typer.Exit(ExitCode.CONFIG_ERROR) from e
-    except FileNotFoundError:
-        msg = f"vault: config file not found: {opts.config}"
-        typer.echo(msg, err=True)
-        raise typer.Exit(ExitCode.CONFIG_ERROR) from None
+    config = _load_config_or_exit(opts)
 
     if json_output:
         # Output as JSON with secrets redacted/annotated
@@ -148,22 +161,7 @@ def show(
 def validate(ctx: typer.Context) -> None:
     """Validate vault configuration and check filesystem preflight."""
     opts = _get_options(ctx)
-
-    if not opts.config:
-        msg = "vault: `config validate` requires --config option"
-        typer.echo(msg, err=True)
-        raise typer.Exit(ExitCode.CONFIG_ERROR)
-
-    try:
-        config = load_config(opts.config)
-    except VaultConfigError as e:
-        msg = format_config_errors(opts.config, e.errors)
-        typer.echo(msg, err=True)
-        raise typer.Exit(ExitCode.CONFIG_ERROR) from e
-    except FileNotFoundError:
-        msg = f"vault: config file not found: {opts.config}"
-        typer.echo(msg, err=True)
-        raise typer.Exit(ExitCode.CONFIG_ERROR) from None
+    config = _load_config_or_exit(opts)
 
     # Run filesystem preflight
     problems = fs_preflight(config)
@@ -172,7 +170,7 @@ def validate(ctx: typer.Context) -> None:
         typer.echo(msg, err=True)
         raise typer.Exit(ExitCode.CONFIG_ERROR)
 
-    typer.echo(f"vault: config OK ({opts.config})")
+    typer.echo(f"vault: config OK (`{opts.config}`)")
     raise typer.Exit(ExitCode.OK)
 
 
@@ -186,11 +184,12 @@ def _format_json_output(config: Config) -> str:
         JSON string representation of the config.
     """
     config_dict = config.model_dump(mode="json")
+    secret_fields = secret_env_field_names(config)
 
     # Helper to recursively update dict with resolved secret information
     def _annotate_secrets(obj: dict[str, Any]) -> None:
         for key, value in list(obj.items()):
-            if key.endswith("_env") and isinstance(value, str):
+            if key in secret_fields and isinstance(value, str):
                 # Check if this env var was actually resolved
                 if config.get_resolved_secret(value):
                     # Replace with annotation showing it's resolved and from which env var
@@ -210,6 +209,7 @@ def _format_json_output(config: Config) -> str:
 def _format_config_output(config: Config) -> str:
     """Format a Config object for human-readable display."""
     lines: list[str] = []
+    secret_fields = secret_env_field_names(config)
 
     lines.append(f"schema_version: {config.schema_version}")
     lines.append("")
@@ -231,7 +231,11 @@ def _format_config_output(config: Config) -> str:
             lines.append(f"  [[sources.{source.name}]]")
             lines.append(f"    kind: {source.kind}")
             lines.append(f"    path: {source.path}")
-            if source.immich_api_key_env and config.get_resolved_secret(source.immich_api_key_env):
+            if (
+                "immich_api_key_env" in secret_fields
+                and source.immich_api_key_env
+                and config.get_resolved_secret(source.immich_api_key_env)
+            ):
                 # Only show "set from" if the env var was actually resolved
                 lines.append(f"    immich_api_key_env: <set from {source.immich_api_key_env}>")
         lines.append("")
@@ -265,8 +269,10 @@ def _format_config_output(config: Config) -> str:
         lines.append("[publish]")
         if config.publish.immich_url:
             lines.append(f"  immich_url: {config.publish.immich_url}")
-        if config.publish.immich_api_key_env and config.get_resolved_secret(
-            config.publish.immich_api_key_env
+        if (
+            "immich_api_key_env" in secret_fields
+            and config.publish.immich_api_key_env
+            and config.get_resolved_secret(config.publish.immich_api_key_env)
         ):
             # Only show "set from" if the env var was actually resolved
             lines.append(f"  immich_api_key_env: <set from {config.publish.immich_api_key_env}>")

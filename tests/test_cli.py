@@ -285,8 +285,10 @@ def test_get_options_accessor_exists() -> None:
 
     # Test that _get_options actually performs an isinstance check by calling it
     # with a proper GlobalOptions instance set on ctx.obj
+    from pathlib import Path
+
     mock_ctx = Mock()
-    opts = GlobalOptions(config=None, dry_run=False, yes=False, verbose=0)
+    opts = GlobalOptions(config=Path("vault.toml"), dry_run=False, yes=False, verbose=0)
     mock_ctx.obj = opts
     result = _get_options(mock_ctx)
     assert result is opts, "_get_options should return the GlobalOptions instance from ctx.obj"

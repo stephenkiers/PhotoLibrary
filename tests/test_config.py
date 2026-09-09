@@ -1,6 +1,5 @@
 """Tests for vault configuration schema and loader."""
 
-import os
 from pathlib import Path
 from textwrap import dedent
 
@@ -9,7 +8,7 @@ from typer.testing import CliRunner
 
 from vault.cli import app
 from vault.config import Config, load_config
-from vault.errors import ExitCode, VaultConfigError
+from vault.errors import VaultConfigError
 
 runner = CliRunner()
 
@@ -30,15 +29,39 @@ def temp_dir(tmp_path: Path) -> Path:
 # ============================================================================
 
 
-def minimal_valid_config(archive_path: str, staging_path: str) -> str:
-    """Return a minimal valid vault.toml config."""
-    return dedent(f'''
+def minimal_valid_config(
+    archive_path: str,
+    staging_path: str,
+    sources: str | None = None,
+    backup_targets: str | None = None,
+) -> str:
+    """Return a minimal valid vault.toml config.
+
+    Args:
+        archive_path: Path to archive directory.
+        staging_path: Path to staging directory.
+        sources: Optional raw TOML fragment for sources section
+            (as array-of-tables, e.g., "[[sources]]\\nname = ...").
+        backup_targets: Optional raw TOML fragment for backup targets section
+            (as array-of-tables).
+
+    Returns:
+        Valid TOML config string.
+    """
+    config = dedent(f'''
         schema_version = 1
 
         [paths]
         archive = "{archive_path}"
         staging = "{staging_path}"
+    ''').strip()
 
+    if sources:
+        config = f"{config}\n\n{sources}"
+
+    config = (
+        f"{config}\n\n"
+        + dedent("""
         [thresholds]
 
         [proxy]
@@ -59,7 +82,13 @@ def minimal_valid_config(archive_path: str, staging_path: str) -> str:
         shared_library_policy = "skip"
 
         [backup]
-    ''').strip()
+    """).strip()
+    )
+
+    if backup_targets:
+        config = f"{config}\n\n{backup_targets}"
+
+    return config
 
 
 # ============================================================================
@@ -92,6 +121,9 @@ def test_valid_config_with_all_sections(temp_dir: Path, monkeypatch: pytest.Monk
     catalog.mkdir(parents=True, exist_ok=True)
     proxies = temp_dir / "paths" / "proxies"
     proxies.mkdir(parents=True, exist_ok=True)
+    # Use a separate source path to avoid overlap
+    source = temp_dir / "sources" / "source1"
+    source.mkdir(parents=True, exist_ok=True)
 
     config_file = temp_dir / "vault.toml"
     config_text = dedent(f'''
@@ -106,7 +138,7 @@ def test_valid_config_with_all_sections(temp_dir: Path, monkeypatch: pytest.Monk
         [[sources]]
         name = "source1"
         kind = "local"
-        path = "{staging}"
+        path = "{source}"
 
         [thresholds]
         min_quality = 0.8
@@ -328,6 +360,56 @@ def test_valid_shared_library_policy_include_no_retire(
     assert isinstance(config, Config)
 
 
+def test_invalid_env_var_name_in_publish_config(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that invalid env var names in publish.immich_api_key_env are rejected."""
+    archive = temp_dir / "paths" / "archive"
+    staging = temp_dir / "paths" / "staging"
+    archive.mkdir(parents=True)
+    staging.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    config_text = minimal_valid_config(str(archive), str(staging))
+    # Replace with an invalid env var name (lowercase)
+    config_text = config_text.replace(
+        'immich_api_key_env = "VAULT_IMMICH_API_KEY"',
+        'immich_api_key_env = "vault_immich_api_key"',
+    )
+    config_file.write_text(config_text)
+
+    monkeypatch.setenv("vault_immich_api_key", "test-key")
+
+    with pytest.raises(VaultConfigError):
+        load_config(config_file)
+
+
+def test_invalid_env_var_name_in_source_config(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that invalid env var names in source.immich_api_key_env are rejected."""
+    archive = temp_dir / "paths" / "archive"
+    staging = temp_dir / "paths" / "staging"
+    archive.mkdir(parents=True)
+    staging.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    sources_fragment = dedent(f'''
+        [[sources]]
+        name = "source1"
+        kind = "local"
+        path = "{staging}"
+        immich_api_key_env = "1INVALID_NAME"
+    ''').strip()
+    config_text = minimal_valid_config(str(archive), str(staging), sources=sources_fragment)
+    config_file.write_text(config_text)
+
+    monkeypatch.setenv("VAULT_IMMICH_API_KEY", "test-key")
+
+    with pytest.raises(VaultConfigError):
+        load_config(config_file)
+
+
 # ============================================================================
 # Test: Secret resolution from environment variables
 # ============================================================================
@@ -424,9 +506,14 @@ def test_malformed_toml_raises_error(temp_dir: Path) -> None:
     config_file = temp_dir / "vault.toml"
     config_file.write_text("[paths]\narchive = /missing/quotes")
 
-    # Should raise either VaultConfigError or TOMLDecodeError
-    with pytest.raises((VaultConfigError, Exception)):
+    # Should raise VaultConfigError (which wraps TOMLDecodeError)
+    with pytest.raises(VaultConfigError) as exc_info:
         load_config(config_file)
+    # Assert the error list contains the config path
+    errors = exc_info.value.errors
+    assert len(errors) > 0
+    error_key_path, error_msg = errors[0]
+    assert str(config_file) in error_key_path or str(config_file) in error_msg
 
 
 def test_malformed_toml_with_invalid_section(temp_dir: Path) -> None:
@@ -434,9 +521,14 @@ def test_malformed_toml_with_invalid_section(temp_dir: Path) -> None:
     config_file = temp_dir / "vault.toml"
     config_file.write_text("[[malformed\n[paths]\narchive = '/path'")
 
-    # Should raise either VaultConfigError or TOMLDecodeError
-    with pytest.raises((VaultConfigError, Exception)):
+    # Should raise VaultConfigError (which wraps TOMLDecodeError)
+    with pytest.raises(VaultConfigError) as exc_info:
         load_config(config_file)
+    # Assert the error list contains details
+    errors = exc_info.value.errors
+    assert len(errors) > 0
+    error_key_path, error_msg = errors[0]
+    assert str(config_file) in error_key_path or str(config_file) in error_msg
 
 
 # ============================================================================
@@ -475,7 +567,42 @@ def test_config_rejects_identical_paths(temp_dir: Path) -> None:
         load_config(config_file)
 
 
-def test_cli_config_validate_reports_missing_paths(temp_dir: Path) -> None:
+def test_config_rejects_source_path_overlapping_archive(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that Config validation rejects a source path nested inside archive."""
+    archive = temp_dir / "archive"
+    archive.mkdir(parents=True)
+    staging = temp_dir / "staging"
+    staging.mkdir(parents=True)
+    # Source path is a subdirectory of archive
+    source_path = archive / "source_subdir"
+    source_path.mkdir()
+
+    config_file = temp_dir / "vault.toml"
+    sources_fragment = dedent(f'''
+        [[sources]]
+        name = "source_in_archive"
+        kind = "local"
+        path = "{source_path}"
+    ''').strip()
+    config_text = minimal_valid_config(str(archive), str(staging), sources=sources_fragment)
+    config_file.write_text(config_text)
+
+    monkeypatch.setenv("VAULT_IMMICH_API_KEY", "test-key")
+
+    # Should raise VaultConfigError due to source path inside archive
+    with pytest.raises(VaultConfigError) as exc_info:
+        load_config(config_file)
+    # Assert the error message mentions the overlap
+    errors = exc_info.value.errors
+    error_msg = " ".join(str(e) for e in errors)
+    assert "sources[0].path" in error_msg or "inside" in error_msg.lower()
+
+
+def test_cli_config_validate_reports_missing_paths(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Test that vault config validate reports missing paths."""
     # Create a config that references non-existent paths
     archive = temp_dir / "paths" / "archive_does_not_exist"
@@ -486,15 +613,11 @@ def test_cli_config_validate_reports_missing_paths(temp_dir: Path) -> None:
     config_file.write_text(config_text)
 
     # Set up environment for secret
-    os.environ["VAULT_IMMICH_API_KEY"] = "test-key"
+    monkeypatch.setenv("VAULT_IMMICH_API_KEY", "test-key")
 
-    try:
-        result = runner.invoke(app, ["--config", str(config_file), "config", "validate"])
-        # Should fail with validation error since paths don't exist
-        assert result.exit_code != 0
-    finally:
-        if "VAULT_IMMICH_API_KEY" in os.environ:
-            del os.environ["VAULT_IMMICH_API_KEY"]
+    result = runner.invoke(app, ["--config", str(config_file), "config", "validate"])
+    # Should fail with validation error since paths don't exist
+    assert result.exit_code != 0
 
 
 # ============================================================================
@@ -641,8 +764,8 @@ def test_cli_config_show_command_exists(temp_dir: Path, monkeypatch: pytest.Monk
 
     result = runner.invoke(app, ["--config", str(config_file), "config", "show"])
 
-    # Should succeed or at least try to run
-    assert result.exit_code in [0, ExitCode.NOT_IMPLEMENTED]
+    # Should succeed
+    assert result.exit_code == 0
 
 
 def test_cli_config_validate_command_exists(
@@ -662,8 +785,8 @@ def test_cli_config_validate_command_exists(
 
     result = runner.invoke(app, ["--config", str(config_file), "config", "validate"])
 
-    # Should succeed or at least try to run
-    assert result.exit_code in [0, ExitCode.NOT_IMPLEMENTED]
+    # Should succeed
+    assert result.exit_code == 0
 
 
 # ============================================================================
@@ -700,6 +823,8 @@ def test_config_with_source_immich_api_key_env(
     staging = temp_dir / "paths" / "staging"
     archive.mkdir(parents=True)
     staging.mkdir(parents=True)
+    source = temp_dir / "sources" / "source1"
+    source.mkdir(parents=True)
 
     config_file = temp_dir / "vault.toml"
     config_text = dedent(f'''
@@ -712,7 +837,7 @@ def test_config_with_source_immich_api_key_env(
         [[sources]]
         name = "source1"
         kind = "local"
-        path = "{staging}"
+        path = "{source}"
         immich_api_key_env = "SOURCE_API_KEY"
 
         [thresholds]
@@ -1094,6 +1219,8 @@ def test_config_source_kind_local_valid(temp_dir: Path, monkeypatch: pytest.Monk
     staging = temp_dir / "paths" / "staging"
     archive.mkdir(parents=True)
     staging.mkdir(parents=True)
+    source = temp_dir / "sources" / "local_source"
+    source.mkdir(parents=True)
 
     config_file = temp_dir / "vault.toml"
     config_text = dedent(f'''
@@ -1106,7 +1233,7 @@ def test_config_source_kind_local_valid(temp_dir: Path, monkeypatch: pytest.Monk
         [[sources]]
         name = "local_source"
         kind = "local"
-        path = "{staging}"
+        path = "{source}"
 
         [thresholds]
 
@@ -1157,3 +1284,30 @@ def test_config_paths_tilde_expansion(temp_dir: Path, monkeypatch: pytest.Monkey
     # Should load without error (tilde expansion should happen)
     config = load_config(config_file)
     assert isinstance(config, Config)
+    # Verify that tilde was actually expanded
+    assert config.paths.archive == Path("~/vault/archive").expanduser().resolve()
+    assert config.paths.staging == Path("~/vault/staging").expanduser().resolve()
+
+
+def test_cli_config_show_with_default_config_path(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that vault config show works without --config when vault.toml exists in cwd."""
+    archive = temp_dir / "paths" / "archive"
+    staging = temp_dir / "paths" / "staging"
+    archive.mkdir(parents=True)
+    staging.mkdir(parents=True)
+
+    # Create vault.toml in temp_dir and run from there
+    config_file = temp_dir / "vault.toml"
+    config_text = minimal_valid_config(str(archive), str(staging))
+    config_file.write_text(config_text)
+
+    monkeypatch.setenv("VAULT_IMMICH_API_KEY", "test-key")
+    monkeypatch.chdir(temp_dir)
+
+    # Run config show without --config (should default to ./vault.toml)
+    result = runner.invoke(app, ["config", "show"])
+
+    # Should succeed since vault.toml exists in cwd
+    assert result.exit_code == 0

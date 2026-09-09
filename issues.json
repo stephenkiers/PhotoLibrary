@@ -194,7 +194,7 @@
     },
     {
       "id": "M0-05",
-      "title": "Config schema and loader (single vault.toml + env overrides)",
+      "title": "Config schema and loader (single vault.toml with pydantic v2 validation and env-var secret resolution)",
       "milestone": "M0",
       "depends_on": [
         "M0-04"
@@ -203,7 +203,7 @@
         "core"
       ],
       "estimate": "S",
-      "description": "Paths (archive, journal, catalog, proxies, staging), sources list, thresholds, proxy params, publish policy (grace days, shared-library policy), backup targets. No secrets in file; secrets via env or keychain.",
+      "description": "Paths (archive, staging, catalog, proxies), sources list, thresholds, proxy params, publish policy (grace days, shared-library policy), backup targets. Secrets via environment variables for *_env fields (e.g., immich_api_key_env). No general env-var override mechanism — only *_env fields resolve from environment. Keychain integration deferred (tracked in M0-21).",
       "acceptance_criteria": [
         "Invalid config fails fast with a clear message",
         "Example config committed as vault.example.toml"
@@ -456,6 +456,27 @@
         "Written decision, referenced by M2-10"
       ],
       "notes": ""
+    },
+    {
+      "id": "M0-21",
+      "title": "macOS Keychain secret resolution for immich_api_key_env and other secrets",
+      "milestone": "M0",
+      "depends_on": [
+        "M0-05"
+      ],
+      "labels": [
+        "security",
+        "mac",
+        "deferred"
+      ],
+      "estimate": "M",
+      "description": "Future enhancement to secret resolution. Currently M0-05 only supports environment variables for *_env fields. Keychain support would allow storing secrets in macOS Keychain instead of environment variables, improving security for local Mac-based operations.",
+      "acceptance_criteria": [
+        "Keychain entries can be referenced by *_env field (e.g., immich_api_key_env = \"keychain:MyImmichKey\")",
+        "Falls back to environment variable if Keychain entry not found",
+        "Resolved secrets still never printed in config show output"
+      ],
+      "notes": "Deferred from M0-05 to focus on environment-variable-only secret resolution as the initial implementation."
     },
     {
       "id": "M1-00",
