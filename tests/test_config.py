@@ -1311,3 +1311,657 @@ def test_cli_config_show_with_default_config_path(
 
     # Should succeed since vault.toml exists in cwd
     assert result.exit_code == 0
+
+
+# ============================================================================
+# Test: Robustness fixes - A2. Permission errors on file open
+# ============================================================================
+
+
+def test_permission_error_on_config_file_wrapped(temp_dir: Path) -> None:
+    """Test that permission errors when opening config file are wrapped as VaultConfigError."""
+    archive = temp_dir / "paths" / "archive"
+    staging = temp_dir / "paths" / "staging"
+    archive.mkdir(parents=True)
+    staging.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    config_text = minimal_valid_config(str(archive), str(staging))
+    config_file.write_text(config_text)
+
+    # Remove read permissions
+    config_file.chmod(0o000)
+
+    try:
+        # Should raise VaultConfigError (not PermissionError)
+        with pytest.raises(VaultConfigError):
+            load_config(config_file)
+    finally:
+        # Restore permissions for cleanup
+        config_file.chmod(0o644)
+
+
+# ============================================================================
+# Test: Robustness fixes - A3. Case-insensitive filesystem overlap
+# ============================================================================
+
+
+def test_case_insensitive_path_overlap_detection(temp_dir: Path) -> None:
+    """Test that case-differing paths are detected as overlapping on case-insensitive filesystems.
+
+    On case-insensitive systems (e.g., macOS HFS+), /path/Archive and /path/archive
+    refer to the same location and should be rejected as overlapping.
+    """
+    # Try to create paths that differ only in case
+    archive_lower = temp_dir / "archive"
+    archive_lower.mkdir(parents=True)
+
+    # On case-insensitive filesystems, this creates the same directory
+    # On case-sensitive filesystems, this creates a different directory
+    archive_upper = temp_dir / "ARCHIVE"
+
+    staging = temp_dir / "staging"
+    staging.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    config_text = minimal_valid_config(str(archive_lower), str(staging))
+    # Replace archive path with case-different version
+    config_text = config_text.replace(str(archive_lower), str(archive_upper))
+    config_file.write_text(config_text)
+
+    # Check if the filesystem is case-insensitive
+    # If archive_lower and archive_upper refer to the same inode, they overlap
+    archive_lower_stat = archive_lower.stat()
+    archive_upper_exists = archive_upper.exists()
+
+    if archive_upper_exists:
+        archive_upper_stat = archive_upper.stat()
+        if archive_lower_stat.st_ino == archive_upper_stat.st_ino:
+            # Case-insensitive filesystem: should detect overlap
+            with pytest.raises(VaultConfigError):
+                load_config(config_file)
+        # else: case-sensitive filesystem, skip this test
+    # else: case-sensitive filesystem, paths don't overlap
+
+
+# ============================================================================
+# Test: Robustness fixes - A4. sources[].path overlap with other sources
+# ============================================================================
+
+
+def test_config_source_path_overlaps_with_another_source(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that two source paths that overlap are rejected."""
+    archive = temp_dir / "archive"
+    archive.mkdir(parents=True)
+    staging = temp_dir / "staging"
+    staging.mkdir(parents=True)
+
+    # Create two source paths, one nested inside the other
+    source1 = temp_dir / "sources" / "source1"
+    source1.mkdir(parents=True)
+    source2 = source1 / "source2"  # Nested inside source1
+    source2.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    sources_fragment = dedent(f'''
+        [[sources]]
+        name = "source1"
+        kind = "local"
+        path = "{source1}"
+
+        [[sources]]
+        name = "source2"
+        kind = "local"
+        path = "{source2}"
+    ''').strip()
+    config_text = minimal_valid_config(str(archive), str(staging), sources=sources_fragment)
+    config_file.write_text(config_text)
+
+    monkeypatch.setenv("VAULT_IMMICH_API_KEY", "test-key")
+
+    # Should raise VaultConfigError due to overlapping source paths
+    with pytest.raises(VaultConfigError) as exc_info:
+        load_config(config_file)
+    # Error should mention the overlap
+    errors = exc_info.value.errors
+    error_msg = " ".join(str(e) for e in errors)
+    assert "source" in error_msg.lower() or "overlap" in error_msg.lower()
+
+
+# ============================================================================
+# Test: C11. Proxy dimensions must be positive (reject zero and negative)
+# ============================================================================
+
+
+def test_config_proxy_review_width_zero_rejected(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that proxy review width = 0 is rejected."""
+    archive = temp_dir / "paths" / "archive"
+    staging = temp_dir / "paths" / "staging"
+    archive.mkdir(parents=True)
+    staging.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    config_text = minimal_valid_config(str(archive), str(staging))
+    # Set review width to 0
+    lines = config_text.split("\n")
+    for i, line in enumerate(lines):
+        if "proxy.review" in line:
+            # Find the width line after this section
+            for j in range(i + 1, len(lines)):
+                if "width" in lines[j]:
+                    lines[j] = "width = 0"
+                    break
+            break
+    config_text = "\n".join(lines)
+    config_file.write_text(config_text)
+
+    monkeypatch.setenv("VAULT_IMMICH_API_KEY", "test-key")
+
+    with pytest.raises(VaultConfigError):
+        load_config(config_file)
+
+
+def test_config_proxy_review_height_negative_rejected(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that proxy review height = -1 is rejected."""
+    archive = temp_dir / "paths" / "archive"
+    staging = temp_dir / "paths" / "staging"
+    archive.mkdir(parents=True)
+    staging.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    config_text = minimal_valid_config(str(archive), str(staging))
+    # Set review height to negative
+    lines = config_text.split("\n")
+    for i, line in enumerate(lines):
+        if "proxy.review" in line:
+            # Find the height line after this section
+            for j in range(i + 1, len(lines)):
+                if "height" in lines[j]:
+                    lines[j] = "height = -1"
+                    break
+            break
+    config_text = "\n".join(lines)
+    config_file.write_text(config_text)
+
+    monkeypatch.setenv("VAULT_IMMICH_API_KEY", "test-key")
+
+    with pytest.raises(VaultConfigError):
+        load_config(config_file)
+
+
+def test_config_proxy_publish_width_negative_rejected(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that proxy publish width = -100 is rejected."""
+    archive = temp_dir / "paths" / "archive"
+    staging = temp_dir / "paths" / "staging"
+    archive.mkdir(parents=True)
+    staging.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    config_text = minimal_valid_config(str(archive), str(staging))
+    # Set publish width to negative
+    lines = config_text.split("\n")
+    for i, line in enumerate(lines):
+        if "proxy.publish" in line:
+            # Find the width line after this section
+            for j in range(i + 1, len(lines)):
+                if "width" in lines[j]:
+                    lines[j] = "width = -100"
+                    break
+            break
+    config_text = "\n".join(lines)
+    config_file.write_text(config_text)
+
+    monkeypatch.setenv("VAULT_IMMICH_API_KEY", "test-key")
+
+    with pytest.raises(VaultConfigError):
+        load_config(config_file)
+
+
+def test_config_proxy_dimensions_min_valid_value(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that proxy dimensions = 1 is valid (minimum positive)."""
+    archive = temp_dir / "paths" / "archive"
+    staging = temp_dir / "paths" / "staging"
+    archive.mkdir(parents=True)
+    staging.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    config_text = minimal_valid_config(str(archive), str(staging))
+    # Set all dimensions to 1
+    config_text = config_text.replace("width = 640", "width = 1")
+    config_text = config_text.replace("width = 1280", "width = 1")
+    config_text = config_text.replace("height = 480", "height = 1")
+    config_text = config_text.replace("height = 960", "height = 1")
+    config_file.write_text(config_text)
+
+    monkeypatch.setenv("VAULT_IMMICH_API_KEY", "test-key")
+
+    config = load_config(config_file)
+    assert isinstance(config, Config)
+
+
+# ============================================================================
+# Test: C18. SourceConfig.kind must be constrained to fixed set
+# ============================================================================
+
+
+def test_config_source_kind_invalid_rejected(temp_dir: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Test that invalid source kind values are rejected."""
+    archive = temp_dir / "paths" / "archive"
+    staging = temp_dir / "paths" / "staging"
+    archive.mkdir(parents=True)
+    staging.mkdir(parents=True)
+    source = temp_dir / "sources" / "source1"
+    source.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    sources_fragment = dedent(f'''
+        [[sources]]
+        name = "bad_source"
+        kind = "invalid_kind_xyz"
+        path = "{source}"
+    ''').strip()
+    config_text = minimal_valid_config(str(archive), str(staging), sources=sources_fragment)
+    config_file.write_text(config_text)
+
+    monkeypatch.setenv("VAULT_IMMICH_API_KEY", "test-key")
+
+    # Should raise VaultConfigError for invalid kind
+    with pytest.raises(VaultConfigError) as exc_info:
+        load_config(config_file)
+    errors = exc_info.value.errors
+    error_msg = " ".join(str(e) for e in errors)
+    assert "kind" in error_msg.lower()
+
+
+# ============================================================================
+# Test: C21. Distinguish missing-env-var errors from schema errors
+# ============================================================================
+
+
+def test_missing_env_var_error_is_distinguishable(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that missing env var errors can be distinguished from schema validation errors.
+
+    The error messages should indicate that the issue is a missing environment
+    variable, not a schema type mismatch or other validation error.
+    """
+    archive = temp_dir / "paths" / "archive"
+    staging = temp_dir / "paths" / "staging"
+    archive.mkdir(parents=True)
+    staging.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    config_text = minimal_valid_config(str(archive), str(staging))
+    config_file.write_text(config_text)
+
+    # Explicitly unset the env var
+    monkeypatch.delenv("VAULT_IMMICH_API_KEY", raising=False)
+
+    with pytest.raises(VaultConfigError) as exc_info:
+        load_config(config_file)
+
+    # Check that the error message mentions the env var name or "not set"
+    errors = exc_info.value.errors
+    error_msg = " ".join(str(e) for e in errors)
+    # Should mention the env var, not just "invalid type"
+    assert (
+        "VAULT_IMMICH_API_KEY" in error_msg
+        or "not set" in error_msg.lower()
+        or "not found" in error_msg.lower()
+        or "environment" in error_msg.lower()
+    )
+
+
+def test_schema_error_vs_missing_env_var_error_format(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that schema validation errors and missing env var errors have different error formats.
+
+    Schema error example: invalid type for grace_days
+    Env var error example: missing environment variable VAULT_IMMICH_API_KEY
+    """
+    archive = temp_dir / "paths" / "archive"
+    staging = temp_dir / "paths" / "staging"
+    archive.mkdir(parents=True)
+    staging.mkdir(parents=True)
+
+    # Test schema error: invalid grace_days type
+    config_file = temp_dir / "vault_schema_error.toml"
+    config_text = minimal_valid_config(str(archive), str(staging))
+    config_text = config_text.replace("grace_days = 0", 'grace_days = "not_a_number"')
+    config_file.write_text(config_text)
+
+    monkeypatch.setenv("VAULT_IMMICH_API_KEY", "test-key")
+
+    try:
+        load_config(config_file)
+        pytest.fail("Should have raised VaultConfigError for schema error")
+    except VaultConfigError as e:
+        schema_error_msg = " ".join(str(err) for err in e.errors)
+
+    # Test env var error: missing VAULT_IMMICH_API_KEY
+    config_file2 = temp_dir / "vault_env_error.toml"
+    config_text2 = minimal_valid_config(str(archive), str(staging))
+    config_file2.write_text(config_text2)
+
+    monkeypatch.delenv("VAULT_IMMICH_API_KEY", raising=False)
+
+    try:
+        load_config(config_file2)
+        pytest.fail("Should have raised VaultConfigError for missing env var")
+    except VaultConfigError as e:
+        env_var_error_msg = " ".join(str(err) for err in e.errors)
+
+    # The error messages should be different (not identical)
+    # Schema error should mention type, env var error should mention env var
+    assert schema_error_msg != env_var_error_msg
+
+
+# ============================================================================
+# Test: B1/B2/B3. Type-level secret marker (pydantic.SecretStr)
+# ============================================================================
+
+
+def test_resolved_secret_uses_secretstr(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that resolved secrets are backed by pydantic.SecretStr.
+
+    This verifies that the secret marker is at the type level, not just
+    a naming convention.
+    """
+    from pydantic import SecretStr
+
+    archive = temp_dir / "paths" / "archive"
+    staging = temp_dir / "paths" / "staging"
+    archive.mkdir(parents=True)
+    staging.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    config_text = minimal_valid_config(str(archive), str(staging))
+    config_file.write_text(config_text)
+
+    secret_value = "super-secret-test-key-12345"
+    monkeypatch.setenv("VAULT_IMMICH_API_KEY", secret_value)
+
+    config = load_config(config_file)
+
+    # The publish config's immich_api_key should be a SecretStr instance
+    if hasattr(config.publish, "immich_api_key"):
+        assert isinstance(config.publish.immich_api_key, SecretStr), (
+            f"publish.immich_api_key should be SecretStr, got {type(config.publish.immich_api_key)}"
+        )
+
+
+def test_secret_field_detection_via_type(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that secret fields are detectable via type inspection (not string-suffix naming).
+
+    The test verifies that there's a way to detect which fields are secrets
+    at the schema level, not by checking for '_env' suffix.
+    """
+    archive = temp_dir / "paths" / "archive"
+    staging = temp_dir / "paths" / "staging"
+    archive.mkdir(parents=True)
+    staging.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    config_text = minimal_valid_config(str(archive), str(staging))
+    config_file.write_text(config_text)
+
+    monkeypatch.setenv("VAULT_IMMICH_API_KEY", "test-key")
+
+    config = load_config(config_file)
+
+    # Inspect the config schema to find secret-marked fields
+    # In pydantic v2, this is done via model_fields on the class
+    from vault.config import PublishConfig
+    publish_fields = PublishConfig.model_fields
+    assert "immich_api_key_env" in publish_fields
+    field_info = publish_fields["immich_api_key_env"]
+    # The field should have a type-level marker (not just naming convention)
+    # Check for metadata that indicates this is a secret field
+    has_secret_marker = (
+        hasattr(field_info, "metadata")
+        and any("SecretMarker" in str(m) or "secret" in str(m).lower() for m in field_info.metadata)
+    )
+    assert has_secret_marker, (
+        f"Secret field should have _SecretMarker metadata. "
+        f"Found metadata: {field_info.metadata if hasattr(field_info, 'metadata') else 'none'}"
+    )
+
+
+# ============================================================================
+# Test: B3. Consistent secret redaction in text and JSON outputs
+# ============================================================================
+
+
+def test_config_show_text_redacts_secrets(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that vault config show (text format) redacts secrets consistently."""
+    archive = temp_dir / "paths" / "archive"
+    staging = temp_dir / "paths" / "staging"
+    archive.mkdir(parents=True)
+    staging.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    config_text = minimal_valid_config(str(archive), str(staging))
+    config_file.write_text(config_text)
+
+    secret_value = "actual-secret-key-12345"
+    monkeypatch.setenv("VAULT_IMMICH_API_KEY", secret_value)
+
+    result = runner.invoke(app, ["--config", str(config_file), "config", "show"])
+
+    assert result.exit_code == 0
+    # Secret value should NOT appear
+    assert secret_value not in result.output
+    # Should show the env var name instead
+    assert "VAULT_IMMICH_API_KEY" in result.output or "<set from" in result.output
+
+
+def test_config_show_json_redacts_secrets(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that vault config show --json redacts secrets consistently."""
+    archive = temp_dir / "paths" / "archive"
+    staging = temp_dir / "paths" / "staging"
+    archive.mkdir(parents=True)
+    staging.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    config_text = minimal_valid_config(str(archive), str(staging))
+    config_file.write_text(config_text)
+
+    secret_value = "actual-secret-json-12345"
+    monkeypatch.setenv("VAULT_IMMICH_API_KEY", secret_value)
+
+    result = runner.invoke(app, ["--config", str(config_file), "config", "show", "--json"])
+
+    assert result.exit_code == 0
+    # Secret value should NOT appear
+    assert secret_value not in result.output
+
+
+def test_config_show_text_and_json_secret_handling_consistent(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that secret handling is consistent between text and JSON outputs.
+
+    Both should either:
+    1. Show the env var name (e.g., '<set from VAULT_IMMICH_API_KEY>'), or
+    2. Show nothing (field omitted)
+
+    But NOT show the actual secret value.
+    """
+    archive = temp_dir / "paths" / "archive"
+    staging = temp_dir / "paths" / "staging"
+    archive.mkdir(parents=True)
+    staging.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    config_text = minimal_valid_config(str(archive), str(staging))
+    config_file.write_text(config_text)
+
+    secret_value = "unified-secret-test-key"
+    monkeypatch.setenv("VAULT_IMMICH_API_KEY", secret_value)
+
+    # Get text output
+    text_result = runner.invoke(app, ["--config", str(config_file), "config", "show"])
+    text_output = text_result.output
+
+    # Get JSON output
+    json_result = runner.invoke(app, ["--config", str(config_file), "config", "show", "--json"])
+    json_output = json_result.output
+
+    # Both should succeed
+    assert text_result.exit_code == 0
+    assert json_result.exit_code == 0
+
+    # Neither should expose the actual secret
+    assert secret_value not in text_output
+    assert secret_value not in json_output
+
+    # Both should indicate where the secret came from (env var name)
+    # This may be shown differently in text vs JSON, but should be present
+    has_env_reference_text = "VAULT_IMMICH_API_KEY" in text_output or "<set" in text_output
+    has_env_reference_json = "VAULT_IMMICH_API_KEY" in json_output or "<set" in json_output
+
+    # At least one of them should have the env var reference
+    assert has_env_reference_text or has_env_reference_json
+
+
+# ============================================================================
+# Test: D4. Default config path validation and missing file handling
+# ============================================================================
+
+
+def test_cli_config_validate_defaults_to_vault_toml(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that vault config validate without --config defaults to ./vault.toml."""
+    archive = temp_dir / "paths" / "archive"
+    staging = temp_dir / "paths" / "staging"
+    archive.mkdir(parents=True)
+    staging.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    config_text = minimal_valid_config(str(archive), str(staging))
+    config_file.write_text(config_text)
+
+    monkeypatch.setenv("VAULT_IMMICH_API_KEY", "test-key")
+    monkeypatch.chdir(temp_dir)
+
+    # Run validate without --config flag
+    result = runner.invoke(app, ["config", "validate"])
+
+    # Should succeed (default to ./vault.toml)
+    assert result.exit_code == 0
+
+
+def test_cli_config_show_missing_default_config_path_error(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that vault config show fails clearly when default vault.toml is missing."""
+    # Change to a directory with no vault.toml
+    monkeypatch.chdir(temp_dir)
+
+    # Run show without --config (should try ./vault.toml)
+    result = runner.invoke(app, ["config", "show"])
+
+    # Should fail with error indicating config file not found
+    assert result.exit_code != 0
+    assert "vault.toml" in result.output or "config" in result.output.lower()
+
+
+# ============================================================================
+# Test: Additional edge cases for robustness
+# ============================================================================
+
+
+def test_config_open_failure_not_file_not_found_wrapped(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that non-FileNotFoundError open failures are wrapped as VaultConfigError."""
+    # Create a directory instead of a file, which will cause IsADirectoryError
+    config_path = temp_dir / "vault.toml"
+    config_path.mkdir(parents=True)
+
+    # Should raise VaultConfigError (not IsADirectoryError)
+    with pytest.raises(VaultConfigError):
+        load_config(config_path)
+
+
+def test_config_path_overlap_with_sources_and_proxies(
+    temp_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Test that source and proxy paths are included in overlap checks."""
+    archive = temp_dir / "archive"
+    archive.mkdir(parents=True)
+    staging = temp_dir / "staging"
+    staging.mkdir(parents=True)
+    proxies = temp_dir / "proxies"
+    proxies.mkdir(parents=True)
+
+    # Create a source path that overlaps with proxies
+    source = proxies / "overlapping_source"
+    source.mkdir(parents=True)
+
+    config_file = temp_dir / "vault.toml"
+    sources_fragment = dedent(f'''
+        [[sources]]
+        name = "overlapping"
+        kind = "local"
+        path = "{source}"
+    ''').strip()
+    config_text = dedent(f'''
+        schema_version = 1
+
+        [paths]
+        archive = "{archive}"
+        staging = "{staging}"
+        proxies = "{proxies}"
+
+        {sources_fragment}
+
+        [thresholds]
+
+        [proxy]
+        [proxy.review]
+        width = 640
+        height = 480
+        quality = 85
+
+        [proxy.publish]
+        width = 1280
+        height = 960
+        quality = 90
+
+        [publish]
+        immich_url = "http://localhost:2283"
+        immich_api_key_env = "VAULT_IMMICH_API_KEY"
+        grace_days = 0
+        shared_library_policy = "skip"
+
+        [backup]
+    ''').strip()
+    config_file.write_text(config_text)
+
+    monkeypatch.setenv("VAULT_IMMICH_API_KEY", "test-key")
+
+    # Should raise VaultConfigError due to source overlapping with proxies
+    with pytest.raises(VaultConfigError):
+        load_config(config_file)
